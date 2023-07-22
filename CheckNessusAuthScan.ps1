@@ -17,14 +17,14 @@ else
 
 # Getting the Interface and IP address information to identify the interface on the system that will be used for authenticated scanning
 
-$Interfaces = Get-NetIPConfiguration | Select-object InterfaceDescription -ExpandProperty AllIPAddresses | Where-Object { $_.IPAddress -notmatch "^(::1|fe80::|169\.254\.\d{1,3}\.\d{1,3})" } | Select ifIndex, AddressFamily, IPAddress, PrefixLength, InterfaceAlias  | Format-Table *
+$Interfaces = Get-NetIPConfiguration | Select-object InterfaceDescription -ExpandProperty AllIPAddresses | Where-Object { $_.IPAddress -notmatch "^(::1|fe80::|169\.254\.\d{1,3}\.\d{1,3})" } | Select ifIndex, IPAddress, PrefixLength, InterfaceAlias  | Format-Table *
 
 Write-Output $Interfaces
 $scanning_interface_id = Read-Host -Prompt "Enter the Interface Index that will be used for the authenticated scan"
 $scanning_interface = Get-NetIPConfiguration | Where-Object { $_.InterfaceIndex -eq $scanning_interface_id }
 $scanning_interface_deviceid = $scanning_interface.NetAdapter.DeviceID
 
-# verify the firewall policies configured on the system
+Write-Host "`n==> Verifying the firewall policies and Default Inbound Actions that are configured on the system. For each profile, either one of the two PASS is ok`n"
 
 $fw_policies = Get-NetFirewallProfile -PolicyStore ActiveStore | select Name, Enabled, DefaultInboundAction
 
@@ -55,7 +55,7 @@ Foreach ($fw_policy in $fw_policies)
     }
 }
 
-# verify if the network sharing service is installed on the selected interface
+Write-Host "`n==> Verifying if the network sharing service is installed on the selected interface`n"
 
 $instance_filter = $scanning_interface_deviceid + "::ms_server"
 $adapter_bindings = Get-NetAdapterBinding | Where-Object { $_.InstanceID -eq $instance_filter } | Select-Object Enabled
@@ -71,7 +71,7 @@ else
     Write-Host -ForegroundColor Red "FAIL"
 }
 
-# verify if the remote registry service is started
+Write-Host "`n==> Verifying if the remote registry service is started and what its startup type is set to`n"
 
 $remoteregservice = Get-Service RemoteRegistry | Select Status, StartType
 Write-Host "Remote registry service is running: " -NoNewline
@@ -93,7 +93,7 @@ else
     Write-Host -ForegroundColor Red "FAIL"
 }
 
-# verify if the UAC LocalAccountTokenFilterPolicy registry key is set to allow non default administrators to perform scanning
+Write-Host "`n==> Verifying if the UAC LocalAccountTokenFilterPolicy registry key is set to allow non default administrators to perform scanning.`n"
 
 Write-Host "UAC LocalAccountTokenFilterPolicy registry key set to 1: " -NoNewline
 
@@ -108,7 +108,7 @@ function Get-RegistryValue($path, $name)
 $val = Get-RegistryValue HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\system LocalAccountTokenFilterPolicy
 if ($val -ne 1) { Write-Host -ForegroundColor Red "FAIL" } else { Write-Host -ForegroundColor Green "PASS" }
 
-# verify if the default administrative shares are enabled
+Write-Host "`n==> Verifying if the default administrative shares are enabled`n"
 
 # Function to check if a share exists
 function Test-Share {
@@ -127,4 +127,35 @@ if ($isAdminShareEnabled) {
     Write-Host -ForegroundColor Red "FAIL"
 }
 
+
+$make_changes = Read-Host -Prompt "`nDo you want to make the necessary changes to allow authenticated scanning (Y/N)?"
+if ($make_changes -eq "Y")
+{
+    Write-Host "Disabling firewall and allowing all inbound connections for all profiles..."
+    Set-NetFirewallProfile -Name Domain -Enabled False -DefaultInboundAction Allow
+    Set-NetFirewallProfile -Name Private -Enabled False -DefaultInboundAction Allow
+    Set-NetFirewallProfile -Name Public -Enabled False -DefaultInboundAction Allow
+
+    Write-Host "Enabling and starting the Remote registry service..."
+    Set-Service RemoteRegistry -StartupType Manual -Status Running
+
+    Write-Host "Creating the LocalAccountTokenFilterPolicy registry key or setting it to 1 to allow scanning..."
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "LocalAccountTokenFilterPolicy" -Value 1 -Force
+}
+
+Write-Host "Performing the authenticated scanning and then press Enter here..."
 pause
+$revert_changes = Read-Host -Prompt "`nDo you want to revert the changes (Y/N)?"
+if ($revert_changes -eq "Y")
+{
+    Write-Host "Reverting changes after scanning..."
+    Write-Host "Enabling firewall and blocking all inbound connections for all profiles..."
+    Set-NetFirewallProfile -Name Domain -Enabled True -DefaultInboundAction Block
+    Set-NetFirewallProfile -Name Private -Enabled True -DefaultInboundAction Block
+    Set-NetFirewallProfile -Name Public -Enabled True -DefaultInboundAction Block
+    Write-Host "Disabling and stopping the Remote registry service..."
+    Set-Service RemoteRegistry -StartupType Disabled
+    Get-Service RemoteRegistry | Stop-Service -Force
+    Write-Host "Remove the LocalAccountTokenFilterPolicy registry key or setting it to 0..."
+    Remove-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name LocalAccountTokenFilterPolicy -Force
+}
