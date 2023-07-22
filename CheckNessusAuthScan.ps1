@@ -1,3 +1,4 @@
+# Getting the current logged on user and verify whether it is a local administrator account or not
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $currentUserName = $currentPrincipal.Identities.Name
 $isadmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -14,12 +15,16 @@ else
     Write-Host -ForegroundColor Red "FAIL"
 }
 
+# Getting the Interface and IP address information to identify the interface on the system that will be used for authenticated scanning
+
 $Interfaces = Get-NetIPConfiguration | Select-object InterfaceDescription -ExpandProperty AllIPAddresses | Where-Object { $_.IPAddress -notmatch "^(::1|fe80::|169\.254\.\d{1,3}\.\d{1,3})" } | Select ifIndex, AddressFamily, IPAddress, PrefixLength, InterfaceAlias  | Format-Table *
 
 Write-Output $Interfaces
 $scanning_interface_id = Read-Host -Prompt "Enter the Interface Index that will be used for the authenticated scan"
 $scanning_interface = Get-NetIPConfiguration | Where-Object { $_.InterfaceIndex -eq $scanning_interface_id }
 $scanning_interface_deviceid = $scanning_interface.NetAdapter.DeviceID
+
+# verify the firewall policies configured on the system
 
 $fw_policies = Get-NetFirewallProfile -PolicyStore ActiveStore | select Name, Enabled, DefaultInboundAction
 
@@ -50,6 +55,8 @@ Foreach ($fw_policy in $fw_policies)
     }
 }
 
+# verify if the network sharing service is installed on the selected interface
+
 $instance_filter = $scanning_interface_deviceid + "::ms_server"
 $adapter_bindings = Get-NetAdapterBinding | Where-Object { $_.InstanceID -eq $instance_filter } | Select-Object Enabled
 $adapter_binding = $adapter_bindings.Enabled
@@ -63,6 +70,8 @@ else
 {
     Write-Host -ForegroundColor Red "FAIL"
 }
+
+# verify if the remote registry service is started
 
 $remoteregservice = Get-Service RemoteRegistry | Select Status, StartType
 Write-Host "Remote registry service is running: " -NoNewline
@@ -84,6 +93,8 @@ else
     Write-Host -ForegroundColor Red "FAIL"
 }
 
+# verify if the UAC LocalAccountTokenFilterPolicy registry key is set to allow non default administrators to perform scanning
+
 Write-Host "UAC LocalAccountTokenFilterPolicy registry key set to 1: " -NoNewline
 
 # Gets the specified registry value or $null if it is missing
@@ -96,6 +107,8 @@ function Get-RegistryValue($path, $name)
 }
 $val = Get-RegistryValue HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\system LocalAccountTokenFilterPolicy
 if ($val -ne 1) { Write-Host -ForegroundColor Red "FAIL" } else { Write-Host -ForegroundColor Green "PASS" }
+
+# verify if the default administrative shares are enabled
 
 # Function to check if a share exists
 function Test-Share {
