@@ -13,13 +13,13 @@ Example of the output:
 Current used user account: <computername>\<username>
 Account is administrator: FAIL
 Firewall Policy is set to Disabled: 
-- Domain:	FAIL
-- Private:	FAIL
-- Public:	FAIL
+-> Domain:	FAIL
+-> Private:	FAIL
+-> Public:	FAIL
 Firewall DefaultInboundAction is set to Allow: 
-- Domain:	FAIL
-- Private:	FAIL
-- Public:	FAIL
+-> Domain:	FAIL
+-> Private:	FAIL
+-> Public:	FAIL
 Network sharing enabled on selected interface: PASS
 Remote registry service is running: FAIL
 Remote registry service startup type is not disabled: FAIL
