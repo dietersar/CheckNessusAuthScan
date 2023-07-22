@@ -10,18 +10,18 @@ Running only the powershell script will run it as currently logged on user.
 
 Example of the output:
 
-Current used user account: <computername>\<username>
-Account is administrator: FAIL
-Firewall Policy is set to Disabled: 
-+ Domain:	FAIL
-+ Private:	FAIL
-+ Public:	FAIL
-Firewall DefaultInboundAction is set to Allow: 
-+ Domain:	FAIL
-+ Private:	FAIL
-+ Public:	FAIL
-Network sharing enabled on selected interface: PASS
-Remote registry service is running: FAIL
-Remote registry service startup type is not disabled: FAIL
-UAC LocalAccountTokenFilterPolicy registry key set to 1: FAIL
-Administrative shares are enabled on this system: PASS
++ Current used user account: <computername>\<username>
++ Account is administrator: FAIL
++ Firewall Policy is set to Disabled: 
+	- Domain:	FAIL
+	- Private:	FAIL
+	- Public:	FAIL
++ Firewall DefaultInboundAction is set to Allow: 
+	- Domain:	FAIL
+	- Private:	FAIL
+	- Public:	FAIL
++ Network sharing enabled on selected interface: PASS
++ Remote registry service is running: FAIL
++ Remote registry service startup type is not disabled: FAIL
++ UAC LocalAccountTokenFilterPolicy registry key set to 1: FAIL
++ Administrative shares are enabled on this system: PASS
