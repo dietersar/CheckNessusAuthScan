@@ -2,6 +2,10 @@
 
 ::::::::::::::::::::::::::::::::::::::::::::
 :: Automatically check & get admin rights V2
+::
+:: Created by Dieter Sarrazyn (dieter at secudea dot be)
+::
+:: GPL 3.0 licensed
 ::::::::::::::::::::::::::::::::::::::::::::
 @echo off
 CLS
@@ -47,5 +51,4 @@ if '%1'=='ELEV' (del "%vbsGetPrivileges%" 1>nul 2>nul  &  shift /1)
 ::START
 ::::::::::::::::::::::::::::
 
-REM Run powershell CheckNessusAuthScan script
 powershell -ExecutionPolicy ByPass -File CheckNessusAuthScan.ps1
