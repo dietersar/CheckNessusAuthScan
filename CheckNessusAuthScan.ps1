@@ -229,7 +229,7 @@ function Get-RegistryValue($path, $name)
 		$key.GetValue($name, $null)
 	}
 }
-$LocalAccountTokenFilterPolicy = Get-RegistryValue HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\system LocalAccountTokenFilterPolicy
+$LocalAccountTokenFilterPolicy = Get-RegistryValue HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System LocalAccountTokenFilterPolicy
 if ($LocalAccountTokenFilterPolicy -ne 1) { Write-Host -ForegroundColor Red "FAIL" } else { Write-Host -ForegroundColor Green "PASS" }
 
 Write-Host -ForegroundColor Yellow "`nVerifying if the default administrative shares are enabled...`n"
