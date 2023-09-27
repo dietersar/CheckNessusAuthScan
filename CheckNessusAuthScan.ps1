@@ -14,6 +14,13 @@ Write-Host " requirements show up as failed. After scanning you can revert back 
 Write-Host " settings prior to the authenticated scanning."
 Write-Host "`n====================================================================================="
 
+# some variables to know what to change and what not and what to revert and what not
+$set_fw_rules = $false
+$set_remote_reg = $false
+$set_uac = $false
+$set_network_sharing = $false
+$set_admin_shares = $false
+
 # Custom function to read Y or y answers from questions and return a boolean value
 function Read-Boolean {
 	param (
@@ -81,6 +88,10 @@ function Generate-RandomPassword {
 
 # BEGINNING OF SCRIPT
 
+# --------------
+# Verify account
+# --------------
+
 $realadmin = $false
 $selectedaccount = ""
 $user_choice = Read-Boolean -Question "`nDo you want to use the currently logged on user for the authenticated scans (Y/N)?"
@@ -138,7 +149,11 @@ Write-Host "Account is administrator: " -NoNewline
 if ($isadmin) { Write-Host -ForegroundColor Green "PASS" }
 else { Write-Host -ForegroundColor Red "FAIL" }
 
-# Getting the Interface and IP address information to identify the interface on the system that will be used for authenticated scanning
+# -------------------------------------------------
+# Getting the Interface and IP address information
+# to identify the interface on the system that will
+# be used for authenticated scanning
+# -------------------------------------------------
 
 $Interfaces = Get-NetIPConfiguration | Select-object InterfaceDescription -ExpandProperty AllIPAddresses | Where-Object { $_.IPAddress -notmatch "^(::1|fe80::|169\.254\.\d{1,3}\.\d{1,3})" } | Select ifIndex, IPAddress, PrefixLength, InterfaceAlias  | Format-Table *
 
@@ -147,37 +162,61 @@ $scanning_interface_id = Read-Integer -Question "Enter the Interface Index that 
 $scanning_interface = Get-NetIPConfiguration | Where-Object { $_.InterfaceIndex -eq $scanning_interface_id }
 $scanning_interface_deviceid = $scanning_interface.NetAdapter.DeviceID
 
-Write-Host -ForegroundColor Yellow "`nVerifying the firewall policies and Default Inbound Actions that are configured on the system."
-Write-Host -ForegroundColor Yellow "For each profile, either the Policy or the Default Inbound Action showing up as PASS is ok...`n"
+# ---------------------
+# Firewall verification
+# ---------------------
 
-$fw_policies = Get-NetFirewallProfile -PolicyStore ActiveStore | select Name, Enabled, DefaultInboundAction
+Write-Host -ForegroundColor Yellow "`nVerifying if the firewall service is started and what its startup type is set to...`n"
 
-Write-Host "Firewall Policy is set to Disabled: "
-Foreach ($fw_policy in $fw_policies)
+$firewallservice = Get-Service mpssvc | Select Status, StartType
+Write-Host "Firewall service is not running: " -NoNewline
+if ($firewallservice.Status -eq "Running")
 {
-	Write-Host "- $($fw_policy.Name):`t" -NoNewline
-	if ($fw_policy.Enabled)
+	Write-Host -ForegroundColor Red "FAIL - Checking the firewall policy now"
+
+	Write-Host -ForegroundColor Yellow "`nVerifying the firewall policies and Default Inbound Actions that are configured on the system."
+	Write-Host -ForegroundColor Yellow "For each profile, either the Policy or the Default Inbound Action showing up as PASS is ok...`n"
+
+	$fw_policies = Get-NetFirewallProfile -PolicyStore ActiveStore | select Name, Enabled, DefaultInboundAction
+
+	Write-Host "Firewall Policy is set to Disabled: "
+	Foreach ($fw_policy in $fw_policies)
 	{
-		Write-Host -ForegroundColor Red "FAIL"
+		Write-Host "- $($fw_policy.Name):`t" -NoNewline
+		if ($fw_policy.Enabled)
+		{
+			Write-Host -ForegroundColor Red "FAIL"
+			$set_fw_rules = $true
+		}
+		else 
+		{
+			Write-Host -ForegroundColor Green "PASS"
+		}
 	}
-	else 
+	Write-Host "Firewall DefaultInboundAction is set to Allow: "
+	Foreach ($fw_policy in $fw_policies)
 	{
-		Write-Host -ForegroundColor Green "PASS"
+		Write-Host "- $($fw_policy.Name):`t" -NoNewline
+		if ($fw_policy.DefaultInboundAction -eq "Block")
+		{
+			Write-Host -ForegroundColor Red "FAIL"
+			$set_fw_rules = $true
+		}
+		else 
+		{
+			Write-Host -ForegroundColor Green "PASS"
+		}
 	}
 }
-Write-Host "Firewall DefaultInboundAction is set to Allow: "
-Foreach ($fw_policy in $fw_policies)
+else 
 {
-	Write-Host "- $($fw_policy.Name):`t" -NoNewline
-	if ($fw_policy.DefaultInboundAction -eq "Block")
-	{
-		Write-Host -ForegroundColor Red "FAIL"
-	}
-	else 
-	{
-		Write-Host -ForegroundColor Green "PASS"
-	}
+	Write-Host -ForegroundColor Green "PASS"
+	# ALL good, nothing to do
 }
+
+# -----------------------------------
+# Verify network sharing on interface
+# -----------------------------------
 
 Write-Host -ForegroundColor Yellow "`nVerifying if the network sharing service is installed on the selected interface...`n"
 
@@ -193,7 +232,12 @@ if ($adapter_binding)
 else 
 {
 	Write-Host -ForegroundColor Red "FAIL"
+	$set_network_sharing = $true
 }
+
+# -----------------------
+# Remote registry service
+# -----------------------
 
 Write-Host -ForegroundColor Yellow "`nVerifying if the remote registry service is started and what its startup type is set to...`n"
 
@@ -206,6 +250,7 @@ if ($remoteregservice.Status -eq "Running")
 else 
 {
 	Write-Host -ForegroundColor Red "FAIL"
+	$set_remote_reg = $true
 }
 Write-Host "Remote registry service startup type is not disabled: " -NoNewline
 if ($remoteregservice.StartType -ne "Disabled")
@@ -215,7 +260,14 @@ if ($remoteregservice.StartType -ne "Disabled")
 else 
 {
 	Write-Host -ForegroundColor Red "FAIL"
+	$set_remote_reg = $true
 }
+
+
+
+# ------------------------------------------------
+# Verify UAC LocalAccountTokenFilterPolicy setting
+# ------------------------------------------------
 
 Write-Host -ForegroundColor Yellow "`nVerifying if the UAC LocalAccountTokenFilterPolicy registry key is set to allow non default administrators to perform scanning...`n"
 
@@ -230,7 +282,15 @@ function Get-RegistryValue($path, $name)
 	}
 }
 $LocalAccountTokenFilterPolicy = Get-RegistryValue HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System LocalAccountTokenFilterPolicy
-if ($LocalAccountTokenFilterPolicy -ne 1) { Write-Host -ForegroundColor Red "FAIL" } else { Write-Host -ForegroundColor Green "PASS" }
+if ($LocalAccountTokenFilterPolicy -ne 1)
+{
+	Write-Host -ForegroundColor Red "FAIL"
+	$set_uac = $true
+} else { Write-Host -ForegroundColor Green "PASS" }
+
+# ------------------------------
+# Checking Administrative shares
+# ------------------------------
 
 Write-Host -ForegroundColor Yellow "`nVerifying if the default administrative shares are enabled...`n"
 
@@ -249,6 +309,7 @@ if ($isAdminShareEnabled) {
 	Write-Host -ForegroundColor Green "PASS"
 } else {
 	Write-Host -ForegroundColor Red "FAIL"
+	$set_admin_shares = $true
 }
 
 # Check if the administrative shares are created automatically - Wks or Server
@@ -263,6 +324,10 @@ else
 {
 	Write-Host -ForegroundColor Green "PASS"
 }
+
+# --------------------------------
+# Making necessary changes section
+# --------------------------------
 
 
 $make_changes = Read-Boolean -Question "`nDo you want to make the necessary changes to allow authenticated scanning (Y/N)?"
@@ -306,28 +371,37 @@ if ($make_changes)
 	}
 
 	# Both the firewall state as well as the Default Inbound Actions are changed as sometimes, Group policies prevent disabling the firewall
-	Write-Host "Disabling firewall and allowing all inbound connections for all profiles..."
-	Set-NetFirewallProfile -Name Domain -Enabled False -DefaultInboundAction Allow
-	Set-NetFirewallProfile -Name Private -Enabled False -DefaultInboundAction Allow
-	Set-NetFirewallProfile -Name Public -Enabled False -DefaultInboundAction Allow
+	if ($set_fw_rules)
+	{
+		Write-Host "Disabling firewall and allowing all inbound connections for all profiles..."
+		Set-NetFirewallProfile -Name Domain -Enabled False -DefaultInboundAction Allow
+		Set-NetFirewallProfile -Name Private -Enabled False -DefaultInboundAction Allow
+		Set-NetFirewallProfile -Name Public -Enabled False -DefaultInboundAction Allow
+	}
 
 	# Set the startup type to Manual for the remote registry service and start it
-	Write-Host "Enabling and starting the Remote registry service..."
-	Set-Service RemoteRegistry -StartupType Manual -Status Running
+	if ($set_remote_reg)
+	{
+		Write-Host "Enabling and starting the Remote registry service..."
+		Set-Service RemoteRegistry -StartupType Manual -Status Running
+	}
 
 	# Allowing remote access to the Admin shares even if UAC is enabled
-	Write-Host "Creating the LocalAccountTokenFilterPolicy registry key or setting it to 1 to allow scanning..."
-	Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "LocalAccountTokenFilterPolicy" -Value 1 -Force
+	if ($set_uac)
+	{
+		Write-Host "Creating the LocalAccountTokenFilterPolicy registry key or setting it to 1 to allow scanning..."
+		Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "LocalAccountTokenFilterPolicy" -Value 1 -Force
+	}
 
 	# Enable the ms_server adapter binding if it is not enabled
-	if (-not($adapter_binding))
+	if (-not($adapter_binding) -and $set_network_sharing)
 	{
 		Write-Host "Enabling the Windows network sharing binding on the interface..."
 		Enable-NetAdapterBinding -Name $($adapter_bindings.Name) -ComponentID ms_server
 	}
 
 	# Setting the automatic creation of admin shares and restart the server service
-	if (($autoShareWksValue -eq 0) -or ($autoShareServerValue -eq 0))
+	if ((($autoShareWksValue -eq 0) -or ($autoShareServerValue -eq 0)) -and $set_admin_shares)
 	{
 		Write-Host "Making sure that the administrative shares are started during boot and restart the LanmanServer service to enable these..."
 		if ($autoShareWksValue -eq 0) {Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "AutoShareWks" -Value 1 -Force}
@@ -338,52 +412,68 @@ if ($make_changes)
 	Write-Host -ForegroundColor Red "!! Do NOT close this script while scanning or reverting to previous settings will no longer be possible !!"
 	Read-Host -prompt "Perform the authenticated scanning and then press Enter to continue the script and restore to the previous state ..."
 		Write-Host "Reverting changes after scanning..."
-		Write-Host "Re-enabling firewall and setting the Default Inbound Action back to previous settings..."
-		# Firewall profile and policy values have been queried before and stored in the fw_policies variable
-		Foreach ($fw_policy in $fw_policies)
+
+		if ($set_fw_rules)
 		{
-			Set-NetFirewallProfile -Name $($fw_policy.Name) -Enabled $($fw_policy.Enabled) -DefaultInboundAction $($fw_policy.DefaultInboundAction)
+			Write-Host "Re-enabling firewall and setting the Default Inbound Action back to previous settings..."
+			# Firewall profile and policy values have been queried before and stored in the fw_policies variable
+			Foreach ($fw_policy in $fw_policies)
+			{
+				Set-NetFirewallProfile -Name $($fw_policy.Name) -Enabled $($fw_policy.Enabled) -DefaultInboundAction $($fw_policy.DefaultInboundAction)
+			}
 		}
+
 
 		# Remote registry service previous value is stored in remoteregservice.StartType - we'll stop the service afterwards, regardless if it was previously running
 		# if the service is needed and startuptype is set to manual or automatic, it will fire up when needed
-		Write-Host "Disabling and stopping the Remote registry service..."
-		Set-Service RemoteRegistry -StartupType $($remoteregservice.StartType)
-		Get-Service RemoteRegistry | Stop-Service -Force
+		if ($set_remote_reg)
+		{
+			Write-Host "Disabling and stopping the Remote registry service..."
+			Set-Service RemoteRegistry -StartupType $($remoteregservice.StartType)
+			Get-Service RemoteRegistry | Stop-Service -Force
+		}
 
 		# The previous state is stored in LocalAccountTokenFilterPolicy - if this variable is null, the created value is removed.
 		# if it was not null, the previous value is restored
-		Write-Host "Remove the LocalAccountTokenFilterPolicy registry key or setting it (back) to 0..."
-		if ($LocalAccountTokenFilterPolicy -eq $null)
+		if ($set_uac)
 		{
-			Remove-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name LocalAccountTokenFilterPolicy -Force
-		}
-		else
-		{
-			Set-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name LocalAccountTokenFilterPolicy -Value 0
+			Write-Host "Remove the LocalAccountTokenFilterPolicy registry key or setting it (back) to 0..."
+			if ($LocalAccountTokenFilterPolicy -eq $null)
+			{
+				Remove-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name LocalAccountTokenFilterPolicy -Force
+			}
+			else
+			{
+				Set-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name LocalAccountTokenFilterPolicy -Value 0
+			}
 		}
 
 		# Reset the adapter_binding to what it was before
-		Write-Host "Resetting the network adapter binding..."
-		if ($adapter_binding)
+		if ($set_network_sharing)
 		{
-			Enable-NetAdapterBinding -Name $($adapter_bindings.Name) -ComponentID ms_server
-		}
-		else 
-		{
-			Disable-NetAdapterBinding -Name $($adapter_bindings.Name) -ComponentID ms_server
+			Write-Host "Resetting the network adapter binding..."
+			if ($adapter_binding)
+			{
+				Enable-NetAdapterBinding -Name $($adapter_bindings.Name) -ComponentID ms_server
+			}
+			else 
+			{
+				Disable-NetAdapterBinding -Name $($adapter_bindings.Name) -ComponentID ms_server
+			}
 		}
 
 		# Resetting the automatic creation of admin shares and restart the server service
-		Write-Host "Resetting the admin shares automatic creation ..."
-		if (($autoShareWksValue -eq 0) -or ($autoShareServerValue -eq 0))
+		if ($set_admin_shares)
 		{
-			if ($autoShareWksValue -eq 0) {Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "AutoShareWks" -Value 0 -Force}
-			if ($autoShareServerValue -eq 0) {Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "AutoShareServer" -Value 0 -Force}
+			Write-Host "Resetting the admin shares automatic creation ..."
+			if (($autoShareWksValue -eq 0) -or ($autoShareServerValue -eq 0))
+			{
+				if ($autoShareWksValue -eq 0) {Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "AutoShareWks" -Value 0 -Force}
+				if ($autoShareServerValue -eq 0) {Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "AutoShareServer" -Value 0 -Force}
+			}
+			# Restart the server service to make these registry changes effective
+			Restart-Service -Name LanmanServer -Force
 		}
-		
-		# Restart the server service to make these registry changes effective
-		Restart-Service -Name LanmanServer -Force
 
 		# If the admin account has been enabled and password changed, reset the password to random value and disable the account
 		if ($continuerealadminchangepassenable)
