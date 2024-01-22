@@ -86,7 +86,46 @@ function Generate-RandomPassword {
 	return $securePassword
 }
 
+Function Log-Message()
+{
+ param
+	(
+	[Parameter(Mandatory=$true)] [string] $Message
+	)
+ 
+	Try {
+		#Get the current date
+		$LogDate = (Get-Date).tostring("yyyyMMdd")
+ 
+		#Get the local computer Name
+		$SystemName = $env:COMPUTERNAME
+
+		#Get the Location of the script
+		If ($psise) {
+			$CurrentDir = Split-Path $psise.CurrentFile.FullPath
+		}
+		Else {
+			$CurrentDir = $Global:PSScriptRoot
+		}
+ 
+		#Frame Log File with Current Directory and date
+		$LogFile = $CurrentDir+ "\" + $LogDate + " " + $SystemName + " CheckNessusAuthLog.txt"
+ 
+		Add-content -Path $Logfile -Value $Message
+	}
+	Catch {
+		Write-host -f Red "Error:" $_.Exception.Message 
+	}
+}
+
 # BEGINNING OF SCRIPT
+$SystemName = $env:COMPUTERNAME
+$LogDate = (Get-Date).tostring("yyyy-MM-dd HH-mm-ss")
+$header = "Nessus Authenticated Scan Readiness Check for $SystemName - Performed on $LogDate"
+$line = "-" * $header.Length
+Log-Message "$header"
+Log-Message "$line`n"
+
 
 # --------------
 # Verify account
@@ -145,9 +184,17 @@ else
 }
 Write-Host "Selected user account: " -NoNewline
 Write-Host $selectedaccount
+Log-Message "Selected user account: $selectedaccount"
 Write-Host "Account is administrator: " -NoNewline
-if ($isadmin) { Write-Host -ForegroundColor Green "PASS" }
-else { Write-Host -ForegroundColor Red "FAIL" }
+if ($isadmin) { 
+	Write-Host -ForegroundColor Green "PASS" 
+	Log-Message "Account is an administrator.`n"
+}
+else { 
+	Write-Host -ForegroundColor Red "FAIL" 
+	Log-Message "Account is NOT an administrator.`n"
+}
+
 
 # -------------------------------------------------
 # Getting the Interface and IP address information
@@ -167,6 +214,7 @@ $scanning_interface_deviceid = $scanning_interface.NetAdapter.DeviceID
 # ---------------------
 
 Write-Host -ForegroundColor Yellow "`nVerifying if the firewall service is started and what its startup type is set to...`n"
+Log-Message "Verifying if the firewall service is started and what its startup type is set to..."
 
 $firewallservice = Get-Service mpssvc | Select Status, StartType
 Write-Host "Firewall service is not running: " -NoNewline
@@ -211,6 +259,7 @@ if ($firewallservice.Status -eq "Running")
 else 
 {
 	Write-Host -ForegroundColor Green "PASS"
+	Log-Message "Firewall service is not running - good to go..."
 	# ALL good, nothing to do
 }
 
@@ -358,15 +407,18 @@ if ($make_changes)
 			$securePassword = Read-Host -Prompt "Enter the new password for the user account" -AsSecureString
 			# Set the password for the user account
 			Set-LocalUser -Name $accountName -Password $securePassword
+			Log-Message "Password of $accountName has been changed."
 		}
 		if ($continuerealadminchangepassenable)
 		{
 			# Enabling the account and setting the password
 			Enable-LocalUser -Name $accountName
+			Log-Message "$accountName has been enabled."
 			# Prompt for password input securely
 			$securePassword = Read-Host -Prompt "Enter the new password for the user account" -AsSecureString
 			# Set the password for the user account
 			Set-LocalUser -Name $accountName -Password $securePassword
+			Log-Message "Password of $accountName has been changed."
 		}
 	}
 
@@ -377,6 +429,7 @@ if ($make_changes)
 		Set-NetFirewallProfile -Name Domain -Enabled False -DefaultInboundAction Allow
 		Set-NetFirewallProfile -Name Private -Enabled False -DefaultInboundAction Allow
 		Set-NetFirewallProfile -Name Public -Enabled False -DefaultInboundAction Allow
+		Low-Message "Local Firewall policies set to Disabled and Default Inbound Action to allow all traffic."
 	}
 
 	# Set the startup type to Manual for the remote registry service and start it
@@ -384,6 +437,7 @@ if ($make_changes)
 	{
 		Write-Host "Enabling and starting the Remote registry service..."
 		Set-Service RemoteRegistry -StartupType Manual -Status Running
+		Log_Message "Remote registry service has been enabled."
 	}
 
 	# Allowing remote access to the Admin shares even if UAC is enabled
@@ -391,6 +445,7 @@ if ($make_changes)
 	{
 		Write-Host "Creating the LocalAccountTokenFilterPolicy registry key or setting it to 1 to allow scanning..."
 		Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "LocalAccountTokenFilterPolicy" -Value 1 -Force
+		Log-Message "LocalAccountTokenFilterPolicy registry key created and set to 1 to allow scanning"
 	}
 
 	# Enable the ms_server adapter binding if it is not enabled
@@ -398,6 +453,7 @@ if ($make_changes)
 	{
 		Write-Host "Enabling the Windows network sharing binding on the interface..."
 		Enable-NetAdapterBinding -Name $($adapter_bindings.Name) -ComponentID ms_server
+		Log-Message "Windows network sharing binding on the interface has been enabled"
 	}
 
 	# Setting the automatic creation of admin shares and restart the server service
@@ -407,11 +463,13 @@ if ($make_changes)
 		if ($autoShareWksValue -eq 0) {Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "AutoShareWks" -Value 1 -Force}
 		if ($autoShareServerValue -eq 0) {Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "AutoShareServer" -Value 1 -Force}
 		Restart-Service -Name LanmanServer
+		Log-Message "Enabled the administrative shares"
 	}
 
 	Write-Host -ForegroundColor Red "!! Do NOT close this script while scanning or reverting to previous settings will no longer be possible !!"
 	Read-Host -prompt "Perform the authenticated scanning and then press Enter to continue the script and restore to the previous state ..."
-		Write-Host "Reverting changes after scanning..."
+	Write-Host "Reverting changes after scanning..."
+	Log-Message "---- Restoring settings ----"
 
 		if ($set_fw_rules)
 		{
@@ -420,6 +478,7 @@ if ($make_changes)
 			Foreach ($fw_policy in $fw_policies)
 			{
 				Set-NetFirewallProfile -Name $($fw_policy.Name) -Enabled $($fw_policy.Enabled) -DefaultInboundAction $($fw_policy.DefaultInboundAction)
+				Log-Message "Reverted $($fw_policy.Name) to $($fw_policy.Enabled) and DefaultInboundAction to $($fw_policy.DefaultInboundAction)"
 			}
 		}
 
@@ -429,6 +488,7 @@ if ($make_changes)
 		if ($set_remote_reg)
 		{
 			Write-Host "Disabling and stopping the Remote registry service..."
+			Log=Message "Disabling and stopping the Remote registry service..."
 			Set-Service RemoteRegistry -StartupType $($remoteregservice.StartType)
 			Get-Service RemoteRegistry | Stop-Service -Force
 		}
@@ -446,6 +506,7 @@ if ($make_changes)
 			{
 				Set-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name LocalAccountTokenFilterPolicy -Value 0
 			}
+			Log-Message "Reverted LocalAccountTokenFilterPolicy to previous state"
 		}
 
 		# Reset the adapter_binding to what it was before
@@ -460,6 +521,7 @@ if ($make_changes)
 			{
 				Disable-NetAdapterBinding -Name $($adapter_bindings.Name) -ComponentID ms_server
 			}
+			Log-Message "Reverted network adapter binding to previous state."
 		}
 
 		# Resetting the automatic creation of admin shares and restart the server service
@@ -473,6 +535,7 @@ if ($make_changes)
 			}
 			# Restart the server service to make these registry changes effective
 			Restart-Service -Name LanmanServer -Force
+			log-Message "Resetted admin shares"
 		}
 
 		# If the admin account has been enabled and password changed, reset the password to random value and disable the account
@@ -487,6 +550,7 @@ if ($make_changes)
 			# Set the password for the user account
 			Set-LocalUser -Name $accountName -Password $securePassword
 			Write-Host "Setting a random password for the local Administrator account ..."
+			Log-Message "Disabled $accountName and resetted password."
 		}
 		if ($continuerealadminchangepass)
 		{
@@ -496,9 +560,11 @@ if ($make_changes)
 			# Set the password for the user account
 			Set-LocalUser -Name $accountName -Password $securePassword
 			Write-Host "Setting a random password for the local Administrator account ..."
+			Log-Message "Resetted password for $accountName"
 		}
 
 		Write-Host "`nThe system has been restored to its previous state`n"
+		Log-Message "---- Finished resetoring settings ----"
 }
 
 pause
