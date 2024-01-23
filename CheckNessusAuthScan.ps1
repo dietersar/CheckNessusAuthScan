@@ -214,13 +214,13 @@ $scanning_interface_deviceid = $scanning_interface.NetAdapter.DeviceID
 # ---------------------
 
 Write-Host -ForegroundColor Yellow "`nVerifying if the firewall service is started and what its startup type is set to...`n"
-Log-Message "Verifying if the firewall service is started and what its startup type is set to..."
 
 $firewallservice = Get-Service mpssvc | Select Status, StartType
 Write-Host "Firewall service is not running: " -NoNewline
 if ($firewallservice.Status -eq "Running")
 {
 	Write-Host -ForegroundColor Red "FAIL - Checking the firewall policy now"
+	Log-Message "Firewall service is running - checking policies and default inbound actions..."
 
 	Write-Host -ForegroundColor Yellow "`nVerifying the firewall policies and Default Inbound Actions that are configured on the system."
 	Write-Host -ForegroundColor Yellow "For each profile, either the Policy or the Default Inbound Action showing up as PASS is ok...`n"
@@ -228,6 +228,7 @@ if ($firewallservice.Status -eq "Running")
 	$fw_policies = Get-NetFirewallProfile -PolicyStore ActiveStore | select Name, Enabled, DefaultInboundAction
 
 	Write-Host "Firewall Policy is set to Disabled: "
+	Log-Message "Checking Firewall Policy settings:"
 	Foreach ($fw_policy in $fw_policies)
 	{
 		Write-Host "- $($fw_policy.Name):`t" -NoNewline
@@ -235,13 +236,16 @@ if ($firewallservice.Status -eq "Running")
 		{
 			Write-Host -ForegroundColor Red "FAIL"
 			$set_fw_rules = $true
+			Log-Message "- $($fw_policy.Name) is Enabled"
 		}
 		else 
 		{
 			Write-Host -ForegroundColor Green "PASS"
+			Log-Message "- $($fw_policy.Name) is Disabled"
 		}
 	}
 	Write-Host "Firewall DefaultInboundAction is set to Allow: "
+	Log-Message "Checking Firewall DefaultInboundAction settings:"
 	Foreach ($fw_policy in $fw_policies)
 	{
 		Write-Host "- $($fw_policy.Name):`t" -NoNewline
@@ -249,10 +253,12 @@ if ($firewallservice.Status -eq "Running")
 		{
 			Write-Host -ForegroundColor Red "FAIL"
 			$set_fw_rules = $true
+			Log-Message "- $($fw_policy.Name) is set to Block"
 		}
 		else 
 		{
 			Write-Host -ForegroundColor Green "PASS"
+			Log-Message "- $($fw_policy.Name) is set to Allow"
 		}
 	}
 }
@@ -277,10 +283,12 @@ Write-Host "Network sharing enabled on selected interface ($($adapter_bindings.N
 if ($adapter_binding)
 {
 	Write-Host -ForegroundColor Green "PASS"
+	Log-Message "Network sharing is enabled on selected interface ($($adapter_bindings.Name))"
 }
 else 
 {
 	Write-Host -ForegroundColor Red "FAIL"
+	Log-Message "Network sharing is NOT enabled on selected interface ($($adapter_bindings.Name))"
 	$set_network_sharing = $true
 }
 
@@ -295,20 +303,24 @@ Write-Host "Remote registry service is running: " -NoNewline
 if ($remoteregservice.Status -eq "Running")
 {
 	Write-Host -ForegroundColor Green "PASS"
+	Log-Message "Remote registry service is running"
 }
 else 
 {
 	Write-Host -ForegroundColor Red "FAIL"
+	Log-Message "Remote registry service is NOT running"
 	$set_remote_reg = $true
 }
 Write-Host "Remote registry service startup type is not disabled: " -NoNewline
 if ($remoteregservice.StartType -ne "Disabled")
 {
 	Write-Host -ForegroundColor Green "PASS"
+	Log-Message "Remote registry service startup type is not set to disabled"
 }
 else 
 {
 	Write-Host -ForegroundColor Red "FAIL"
+	Log-Message "Remote registry service startup type is set to disabled"
 	$set_remote_reg = $true
 }
 
@@ -383,7 +395,7 @@ $make_changes = Read-Boolean -Question "`nDo you want to make the necessary chan
 if ($make_changes)
 {
 	# in this choice, the previous states are not looked at, all necessary changes are done to make sure auth scanning will be succesfull.
-
+	Log-Message "`n---- Making necessary changes to the system to allow authenticated scanning ----"
 	if ($realadmin) 
 	{
 		# Check if the account is disabled or not
@@ -429,7 +441,7 @@ if ($make_changes)
 		Set-NetFirewallProfile -Name Domain -Enabled False -DefaultInboundAction Allow
 		Set-NetFirewallProfile -Name Private -Enabled False -DefaultInboundAction Allow
 		Set-NetFirewallProfile -Name Public -Enabled False -DefaultInboundAction Allow
-		Low-Message "Local Firewall policies set to Disabled and Default Inbound Action to allow all traffic."
+		Log-Message "Local Firewall policies set to Disabled and Default Inbound Action to allow all traffic."
 	}
 
 	# Set the startup type to Manual for the remote registry service and start it
@@ -437,7 +449,7 @@ if ($make_changes)
 	{
 		Write-Host "Enabling and starting the Remote registry service..."
 		Set-Service RemoteRegistry -StartupType Manual -Status Running
-		Log_Message "Remote registry service has been enabled."
+		Log-Message "Remote registry service has been enabled."
 	}
 
 	# Allowing remote access to the Admin shares even if UAC is enabled
@@ -469,7 +481,7 @@ if ($make_changes)
 	Write-Host -ForegroundColor Red "!! Do NOT close this script while scanning or reverting to previous settings will no longer be possible !!"
 	Read-Host -prompt "Perform the authenticated scanning and then press Enter to continue the script and restore to the previous state ..."
 	Write-Host "Reverting changes after scanning..."
-	Log-Message "---- Restoring settings ----"
+	Log-Message "`n---- Restoring settings ----"
 
 		if ($set_fw_rules)
 		{
@@ -478,7 +490,7 @@ if ($make_changes)
 			Foreach ($fw_policy in $fw_policies)
 			{
 				Set-NetFirewallProfile -Name $($fw_policy.Name) -Enabled $($fw_policy.Enabled) -DefaultInboundAction $($fw_policy.DefaultInboundAction)
-				Log-Message "Reverted $($fw_policy.Name) to $($fw_policy.Enabled) and DefaultInboundAction to $($fw_policy.DefaultInboundAction)"
+				Log-Message "Reverted Firewall $($fw_policy.Name) to $($fw_policy.Enabled) and DefaultInboundAction to $($fw_policy.DefaultInboundAction)"
 			}
 		}
 
@@ -488,7 +500,7 @@ if ($make_changes)
 		if ($set_remote_reg)
 		{
 			Write-Host "Disabling and stopping the Remote registry service..."
-			Log=Message "Disabling and stopping the Remote registry service..."
+			Log-Message "Disabling and stopping the Remote registry service..."
 			Set-Service RemoteRegistry -StartupType $($remoteregservice.StartType)
 			Get-Service RemoteRegistry | Stop-Service -Force
 		}
@@ -535,7 +547,7 @@ if ($make_changes)
 			}
 			# Restart the server service to make these registry changes effective
 			Restart-Service -Name LanmanServer -Force
-			log-Message "Resetted admin shares"
+			Log-Message "Resetted admin shares and restarted Server Service"
 		}
 
 		# If the admin account has been enabled and password changed, reset the password to random value and disable the account
