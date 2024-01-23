@@ -556,27 +556,21 @@ if ($make_changes)
 			Write-Host "Disabling the local Administrator account ..."
 			# Disabling the account and setting the password
 			Disable-LocalUser -Name $accountName
-			# Prompt for password input securely
-			$Password = Generate-RandomPassword -length 20
-			$securePassword = ConvertTo-SecureString -AsPlainText $Password -Force
 			# Set the password for the user account
-			Set-LocalUser -Name $accountName -Password $securePassword
+			Set-LocalUser -Name $accountName -Password $(ConvertTo-SecureString -AsPlainText $(Generate-RandomPassword -length 20) -Force)
 			Write-Host "Setting a random password for the local Administrator account ..."
-			Log-Message "Disabled $accountName and resetted password."
+			Log-Message "Disabled $accountName and set a random password."
 		}
 		if ($continuerealadminchangepass)
 		{
-			# Prompt for password input securely
-			$Password = Generate-RandomPassword -length 20
-			$securePassword = ConvertTo-SecureString -AsPlainText $Password -Force
 			# Set the password for the user account
-			Set-LocalUser -Name $accountName -Password $securePassword
+			Set-LocalUser -Name $accountName -Password $(ConvertTo-SecureString -AsPlainText $(Generate-RandomPassword -length 20) -Force)
 			Write-Host "Setting a random password for the local Administrator account ..."
 			Log-Message "Resetted password for $accountName"
 		}
 
 		Write-Host "`nThe system has been restored to its previous state`n"
-		Log-Message "---- Finished resetoring settings ----"
+		Log-Message "---- Finished restoring settings ----"
 }
 
 pause
