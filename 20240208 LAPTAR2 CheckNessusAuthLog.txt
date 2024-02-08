@@ -1,0 +1,3 @@
+Nessus Authenticated Scan Readiness Check for LAPTAR2 - Performed on 2024-02-08 17-33-22
+----------------------------------------------------------------------------------------
+

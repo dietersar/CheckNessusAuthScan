@@ -20,6 +20,7 @@ $set_remote_reg = $false
 $set_uac = $false
 $set_network_sharing = $false
 $set_admin_shares = $false
+$added_account = $false
 
 # Custom function to read Y or y answers from questions and return a boolean value
 function Read-Boolean {
@@ -118,6 +119,34 @@ Function Log-Message()
 	}
 }
 
+function CreateAdminUser()
+{
+	# Fixed username and password
+	$username = "Check"
+	$password = "Ch3ckPass123!?"
+
+	# Create a new local user
+	$user = New-LocalUser -Name $username -Password (ConvertTo-SecureString -AsPlainText $password -Force) -AccountNeverExpires:$true -PasswordNeverExpires:$true
+	
+	# Add the user to the local Administrators group
+	Add-LocalGroupMember -Group "Administrators" -Member $username
+	
+	Write-Output "=> User $username created and added to Administrators group."
+
+}
+
+function Remove-LocalUser {
+	param(
+		[Parameter(Mandatory=$true)]
+		[string]$Username
+	)
+
+	# Remove the local user
+	Remove-LocalUser -Name $Username
+	
+	Write-Output "User $Username removed."
+}
+
 # BEGINNING OF SCRIPT
 $SystemName = $env:COMPUTERNAME
 $LogDate = (Get-Date).tostring("yyyy-MM-dd HH-mm-ss")
@@ -174,13 +203,23 @@ else
 		}
 		$index++
 	}
+	Write-Host ""
+	Write-Host "0 - Create a new local administrator account"
 
 	$selectedAccountId = Read-Integer -Question "`nSelect the administrator account you want to use for authenticated scans"
-	$rowNumber = [int]$selectedAccountId
-	$selectedAdmin  = $adminsArray | Where-Object { $_.RowNumber -eq $rowNumber }
-	$realadmin = $selectedAdmin.RealAdmin
-	$selectedaccount =  $selectedAdmin.Name
-	$isadmin = $true
+	if ($selectedAccountId > 0) {
+		$rowNumber = [int]$selectedAccountId
+		$selectedAdmin  = $adminsArray | Where-Object { $_.RowNumber -eq $rowNumber }
+		$realadmin = $selectedAdmin.RealAdmin
+		$selectedaccount =  $selectedAdmin.Name
+		$isadmin = $true
+	}
+	else if ($selectedAccountId = 0) 
+	{
+		CreateAdminUser
+		$selectedaccount = "Check"
+		$added_account = $true
+	}
 }
 Write-Host "Selected user account: " -NoNewline
 Write-Host $selectedaccount
@@ -567,6 +606,11 @@ if ($make_changes)
 			Set-LocalUser -Name $accountName -Password $(ConvertTo-SecureString -AsPlainText $(Generate-RandomPassword -length 20) -Force)
 			Write-Host "Setting a random password for the local Administrator account ..."
 			Log-Message "Resetted password for $accountName"
+		}
+		# Removing the added account should this been chosen
+		if ($added_account)
+		{
+			Remove-LocalUser -Username "Check"
 		}
 
 		Write-Host "`nThe system has been restored to its previous state`n"
