@@ -16,3 +16,24 @@ Account is NOT an administrator.
 Nessus Authenticated Scan Readiness Check for LAPTAR2 - Performed on 2024-02-09 09-35-59
 ----------------------------------------------------------------------------------------
 
+Nessus Authenticated Scan Readiness Check for LAPTAR2 - Performed on 2024-02-09 09-50-59
+----------------------------------------------------------------------------------------
+
+Nessus Authenticated Scan Readiness Check for LAPTAR2 - Performed on 2024-02-09 09-51-29
+----------------------------------------------------------------------------------------
+
+Selected user account: Check
+Account is an administrator.
+
+Firewall service is running - checking policies and default inbound actions...
+Checking Firewall Policy settings:
+- Domain is Enabled
+- Private is Enabled
+- Public is Enabled
+Checking Firewall DefaultInboundAction settings:
+- Domain is set to Block
+- Private is set to Block
+- Public is set to Block
+Network sharing is enabled on selected interface (WiFi)
+Remote registry service is NOT running
+Remote registry service startup type is set to disabled

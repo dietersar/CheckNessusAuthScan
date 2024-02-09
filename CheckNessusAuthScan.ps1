@@ -101,16 +101,10 @@ Function Log-Message()
 		#Get the local computer Name
 		$SystemName = $env:COMPUTERNAME
 
-		#Get the Location of the script
-		If ($psise) {
-			$CurrentDir = Split-Path $psise.CurrentFile.FullPath
-		}
-		Else {
-			$CurrentDir = $Global:PSScriptRoot
-		}
+		$CurrentDir = $PSScriptRoot
  
 		#Frame Log File with Current Directory and date
-		$LogFile = $CurrentDir+ "\" + $LogDate + " " + $SystemName + " CheckNessusAuthLog.txt"
+		$LogFile = $CurrentDir + "\" + $LogDate + " " + $SystemName + " CheckNessusAuthLog.txt"
  
 		Add-content -Path $Logfile -Value $Message
 	}
@@ -234,6 +228,7 @@ elseif ($selectedAccountId -eq 0)
 {
 	$selectedaccount = "Check"
 	$add_account = $true
+	$isadmin = $true
 }
 
 Write-Host "Selected user account: " -NoNewline
