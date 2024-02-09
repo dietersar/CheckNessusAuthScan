@@ -1,3 +1,9 @@
 Nessus Authenticated Scan Readiness Check for LAPTAR2 - Performed on 2024-02-08 17-33-22
 ----------------------------------------------------------------------------------------
 
+Nessus Authenticated Scan Readiness Check for LAPTAR2 - Performed on 2024-02-08 18-50-57
+----------------------------------------------------------------------------------------
+
+Selected user account: 
+Account is NOT an administrator.
+

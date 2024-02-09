@@ -3,7 +3,7 @@
 # Can be used to perform pre-checks to allow Nessus Authenticated scans
 # Requirements are from https://docs.tenable.com/nessus/Content/EnableWindowsLoginsForLocalAndRemoteAudits.htm
 #
-# Created by Dieter Sarrazyn (dieter at secudea dot be or dieter at securiacs dot com)
+# Created by Dieter Sarrazyn (dieter at secudea dot be)
 #
 # GPL 3.0 licensed
 
@@ -20,7 +20,7 @@ $set_remote_reg = $false
 $set_uac = $false
 $set_network_sharing = $false
 $set_admin_shares = $false
-$added_account = $false
+$add_account = $false
 
 # Custom function to read Y or y answers from questions and return a boolean value
 function Read-Boolean {
@@ -121,12 +121,16 @@ Function Log-Message()
 
 function CreateAdminUser()
 {
+	param
+	(
+	[Parameter(Mandatory=$true)] [string] $password
+	)
+
 	# Fixed username and password
 	$username = "Check"
-	$password = "Ch3ckPass123!?"
 
 	# Create a new local user
-	$user = New-LocalUser -Name $username -Password (ConvertTo-SecureString -AsPlainText $password -Force) -AccountNeverExpires:$true -PasswordNeverExpires:$true
+	New-LocalUser -Name $username -Password (ConvertTo-SecureString -AsPlainText $password -Force) -AccountNeverExpires:$true -PasswordNeverExpires:$true
 	
 	# Add the user to the local Administrators group
 	Add-LocalGroupMember -Group "Administrators" -Member $username
@@ -156,71 +160,82 @@ Log-Message "$header"
 Log-Message "$line`n"
 
 
-# --------------
-# Verify account
-# --------------
+# -------------------------------------------------------------------
+# Verify account and selecting admin account to perform the scan with
+# -------------------------------------------------------------------
 
 $realadmin = $false
 $selectedaccount = ""
-$user_choice = Read-Boolean -Question "`nDo you want to use the currently logged on user for the authenticated scans (Y/N)?"
-if ($user_choice)
+
+# Getting the current logged on user and verify whether it is a local administrator account or not
+$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+$currentUserName = $currentPrincipal.Identities.Name
+$isadmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (!$isadmin)
 {
-	# Getting the current logged on user and verify whether it is a local administrator account or not
-	$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-	$currentUserName = $currentPrincipal.Identities.Name
-	$isadmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-	$selectedaccount = $currentUserName
-	$realadmin = IsBuiltInAdministrator -SID $currentPrincipal.Identity.User.Value
+	Write-Host "`nThis script has to be run as administrator - exiting now`n"
+	exit
 }
-else
-{
-	# Getting list of local administrative users and let the user select one
-	$administratorsGroup = Get-LocalGroupMember -Group "Administrators"
-	$adminsArray = @()
-	$index = 1
 
-	Write-Host "`nList of the local Administrators on this system:`n"
+# Getting list of local administrative users and let the user select one
+$administratorsGroup = Get-LocalGroupMember -Group "Administrators"
+$adminsArray = @()
+$index = 1
 
-	foreach ($member in $administratorsGroup) {
-		$name = $member.Name
-		$realadmin = IsBuiltInAdministrator -SID $member.SID
-		$adminsArray += [PSCustomObject]@{
-			RowNumber = $index
-			Name = $name
-			ID = $member.SID
-			RealAdmin = $realadmin
-		}
-		Write-Host $index -NoNewline
-		Write-Host " - " -NoNewline
-		Write-Host $name -NoNewline
-		if ($realadmin) 
-		{
-			Write-Host " (Real Administrator)"
-		}
-		else 
-		{
-			Write-Host ""
-		}
-		$index++
+Write-Host "`nList of the local Administrators on this system:`n"
+
+Write-Host "0 - Create a new local administrator account - 'Check'"
+foreach ($member in $administratorsGroup) {
+	$name = $member.Name
+	$realadmin = IsBuiltInAdministrator -SID $member.SID
+	$adminsArray += [PSCustomObject]@{
+		RowNumber = $index
+		Name = $name
+		ID = $member.SID
+		RealAdmin = $realadmin
 	}
-	Write-Host ""
-	Write-Host "0 - Create a new local administrator account"
-
-	$selectedAccountId = Read-Integer -Question "`nSelect the administrator account you want to use for authenticated scans"
-	if ($selectedAccountId > 0) {
-		$rowNumber = [int]$selectedAccountId
-		$selectedAdmin  = $adminsArray | Where-Object { $_.RowNumber -eq $rowNumber }
-		$realadmin = $selectedAdmin.RealAdmin
-		$selectedaccount =  $selectedAdmin.Name
-		$isadmin = $true
-	}
-	else if ($selectedAccountId = 0) 
+	Write-Host $index -NoNewline
+	Write-Host " - " -NoNewline
+	Write-Host $name -NoNewline
+	if ($realadmin) 
 	{
-		CreateAdminUser
-		$selectedaccount = "Check"
-		$added_account = $true
+		Write-Host " - Real Administrator" -NoNewline
 	}
+	else 
+	{
+		Write-Host "" -NoNewline
+	}
+	if ($name -eq $currentUserName)
+	{
+		Write-Host " - Current logged on user"
+	}
+	else 
+		{
+		Write-Host ""
+	}
+	$index++
 }
+
+$selectedAccountId = Read-Integer -Question "`nSelect the administrator account you want to use for authenticated scans or select '0' to create a temporary account"
+while ($selectedAccountId -lt 0)
+{
+	Write-Host "No Account has been selected. Please enter a valid number."
+	$selectedAccountId = Read-Integer -Question "`nSelect the administrator account you want to use for authenticated scans"
+}
+if ($selectedAccountId -gt 0) {
+	$rowNumber = [int]$selectedAccountId
+	$selectedAdmin  = $adminsArray | Where-Object { $_.RowNumber -eq $rowNumber }
+	$realadmin = $selectedAdmin.RealAdmin
+	$selectedaccount =  $selectedAdmin.Name
+	$isadmin = $true
+}
+elseif ($selectedAccountId -eq 0) 
+{
+	$selectedaccount = "Check"
+	$add_account = $true
+}
+
 Write-Host "Selected user account: " -NoNewline
 Write-Host $selectedaccount
 Log-Message "Selected user account: $selectedaccount"
@@ -473,6 +488,22 @@ if ($make_changes)
 		}
 	}
 
+	if ($add_account)
+	{
+		Write-Host -ForeGroundColor Yellow "Adding a temporary user account ('Check') and adding it to the Administrators group..."
+		$password_provided = Read-Boolean -Question "Do you want to provide a password? Select No to use a default temporary password. (Y/N)"
+		if ($password_provided)
+		{
+			$password = Read-Host -Prompt "Enter the new password for the user account"
+		}
+		else 
+		{
+			$password = "Ch3ckPass123!?"
+		}
+
+		CreateAdminUser $password
+	}
+
 	# Both the firewall state as well as the Default Inbound Actions are changed as sometimes, Group policies prevent disabling the firewall
 	if ($set_fw_rules)
 	{
@@ -610,7 +641,8 @@ if ($make_changes)
 		# Removing the added account should this been chosen
 		if ($added_account)
 		{
-			Remove-LocalUser -Username "Check"
+			Remove-LocalUser -Name "Check"
+			Write-Host "Additional created administrator account 'Check' has been removed."
 		}
 
 		Write-Host "`nThe system has been restored to its previous state`n"
