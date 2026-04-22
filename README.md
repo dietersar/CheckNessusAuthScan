@@ -164,24 +164,6 @@ Typical output includes:
 - actions that will be taken
 - restore step results
 
-## Screenshots
-
-Create a `docs/screenshots/` folder and add screenshots such as:
-
-- `account-selection.png`
-- `readiness-summary.png`
-- `restore-phase.png`
-- `gui-main-window.png`
-
-Then reference them like this:
-
-```markdown
-![Account selection](docs/screenshots/account-selection.png)
-![Readiness summary](docs/screenshots/readiness-summary.png)
-![Restore phase](docs/screenshots/restore-phase.png)
-![GUI main window](docs/screenshots/gui-main-window.png)
-```
-
 ## Notes
 
 - This tool is intended to help prepare standalone systems for successful authenticated Nessus scans.
