@@ -1,54 +1,38 @@
 @echo off
+setlocal EnableExtensions DisableDelayedExpansion
 
-::::::::::::::::::::::::::::::::::::::::::::
-:: Automatically check & get admin rights V2
-::
-:: Created by Dieter Sarrazyn (dieter at secudea dot be)
-::
-:: GPL 3.0 licensed
-::::::::::::::::::::::::::::::::::::::::::::
-@echo off
-CLS
-ECHO.
-ECHO ===============================================================
-ECHO Running Admin shell to Check Nessus Authenticated Scan settings
-ECHO ===============================================================
-ECHO.
+set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" set "PS=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
 
-:init
-setlocal DisableDelayedExpansion
-set "batchPath=%~0"
-for %%k in (%0) do set batchName=%%~nk
-set "vbsGetPrivileges=%temp%\OEgetPriv_%batchName%.vbs"
-setlocal EnableDelayedExpansion
+set "SCRIPT_DIR=%~dp0"
+set "PS1_FILE=%SCRIPT_DIR%CheckNessusAuthScan.ps1"
 
-:checkPrivileges
-NET FILE 1>NUL 2>NUL
-if '%errorlevel%' == '0' ( goto gotPrivileges ) else ( goto getPrivileges )
+cls
+echo.
+echo ===============================================================
+echo Running Admin shell to Check Nessus Authenticated Scan settings
+echo ===============================================================
+echo.
 
-:getPrivileges
-if '%1'=='ELEV' (echo ELEV & shift /1 & goto gotPrivileges)
-ECHO.
-ECHO **************************************
-ECHO Invoking UAC for Privilege Escalation
-ECHO **************************************
+if not exist "%PS1_FILE%" (
+    echo ERROR: Cannot find "%PS1_FILE%"
+    echo.
+    pause
+    exit /b 1
+)
 
-ECHO Set UAC = CreateObject^("Shell.Application"^) > "%vbsGetPrivileges%"
-ECHO args = "ELEV " >> "%vbsGetPrivileges%"
-ECHO For Each strArg in WScript.Arguments >> "%vbsGetPrivileges%"
-ECHO args = args ^& strArg ^& " "  >> "%vbsGetPrivileges%"
-ECHO Next >> "%vbsGetPrivileges%"
-ECHO UAC.ShellExecute "!batchPath!", args, "", "runas", 1 >> "%vbsGetPrivileges%"
-"%SystemRoot%\System32\WScript.exe" "%vbsGetPrivileges%" %*
-exit /B
+net session >nul 2>&1
+if errorlevel 1 (
+    echo Requesting administrative privileges...
+    "%PS%" -NoProfile -ExecutionPolicy Bypass -Command ^
+        "Start-Process -FilePath '%PS%' -Verb RunAs -WorkingDirectory '%SCRIPT_DIR%' -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File ""%PS1_FILE%""'"
+    exit /b
+)
 
-:gotPrivileges
-setlocal & pushd .
-cd /d %~dp0
-if '%1'=='ELEV' (del "%vbsGetPrivileges%" 1>nul 2>nul  &  shift /1)
+cd /d "%SCRIPT_DIR%"
+"%PS%" -NoProfile -ExecutionPolicy Bypass -File "%PS1_FILE%"
+set "EXITCODE=%ERRORLEVEL%"
 
-::::::::::::::::::::::::::::
-::START
-::::::::::::::::::::::::::::
-
-powershell -ExecutionPolicy ByPass -File CheckNessusAuthScan.ps1
+echo.
+pause
+exit /b %EXITCODE%

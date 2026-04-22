@@ -1,647 +1,1082 @@
 # CheckNessusAuthScan.ps1
 #
 # Can be used to perform pre-checks to allow Nessus Authenticated scans
-# Requirements are from https://docs.tenable.com/nessus/Content/EnableWindowsLoginsForLocalAndRemoteAudits.htm
+# Requirements are from:
+# https://docs.tenable.com/nessus/Content/EnableWindowsLoginsForLocalAndRemoteAudits.htm
 #
 # Created by Dieter Sarrazyn (dieter at secudea dot be)
 #
 # GPL 3.0 licensed
 
-Write-Host "`n====================================================================================="
-Write-Host "`n This script checks for the requirements to allow Nessus Authenticated scans against "
-Write-Host " standalone systems and allows you to change the system should some of these "
-Write-Host " requirements show up as failed. After scanning you can revert back to the original"
-Write-Host " settings prior to the authenticated scanning."
-Write-Host "`n====================================================================================="
+[CmdletBinding()]
+param(
+    [switch]$RestoreOnly,
+    [switch]$ForceRestore
+)
 
-# some variables to know what to change and what not and what to revert and what not
-$set_fw_rules = $false
-$set_remote_reg = $false
-$set_uac = $false
-$set_network_sharing = $false
-$set_admin_shares = $false
-$add_account = $false
+$ErrorActionPreference = 'Stop'
 
-# Custom function to read Y or y answers from questions and return a boolean value
-function Read-Boolean {
-	param (
-		[string]$Question
-	)
+$Script:BaseFolder = Join-Path $env:ProgramData 'CheckNessusAuth'
+$Script:SessionFile = Join-Path $Script:BaseFolder 'session.json'
+$Script:LogFolder = Join-Path $Script:BaseFolder 'Logs'
 
-	$response = Read-Host -prompt $Question
-	$booleanValue = ($response -eq 'Y' -or $response -eq 'y')
-	return $booleanValue
+New-Item -ItemType Directory -Path $Script:BaseFolder -Force | Out-Null
+New-Item -ItemType Directory -Path $Script:LogFolder -Force | Out-Null
+
+try {
+    $Host.UI.RawUI.WindowTitle = "Check Nessus Authenticated Scan"
+} catch {}
+
+function Log-Message {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    try {
+        $logDate = (Get-Date).ToString("yyyyMMdd")
+        $systemName = $env:COMPUTERNAME
+        $logFile = Join-Path $Script:LogFolder "$logDate $systemName CheckNessusAuthLog.txt"
+        Add-Content -Path $logFile -Value ("[{0}] {1}" -f (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"), $Message)
+    }
+    catch {
+        Write-Host -ForegroundColor Red "Logging failed: $($_.Exception.Message)"
+    }
 }
 
-# Custom function to read input and verify it to be an integer
+trap {
+    Log-Message "UNHANDLED ERROR: $($_.Exception.Message)"
+    Write-Host -ForegroundColor Red "Unhandled error: $($_.Exception.Message)"
+    if ($_.ScriptStackTrace) {
+        Write-Host -ForegroundColor DarkRed $_.ScriptStackTrace
+        Log-Message $_.ScriptStackTrace
+    }
+    Write-Host ""
+    Read-Host "Press Enter to close" | Out-Null
+    break
+}
+
+function Write-Line {
+    param(
+        [int]$Length = 72,
+        [string]$Color = 'DarkCyan'
+    )
+    Write-Host ("=" * $Length) -ForegroundColor $Color
+}
+
+function Write-Title {
+    param(
+        [string]$Text
+    )
+
+    Write-Host ""
+    Write-Line
+    Write-Host (" {0}" -f $Text) -ForegroundColor Cyan
+    Write-Line
+    Write-Host ""
+}
+
+function Write-Section {
+    param(
+        [string]$Text
+    )
+
+    Write-Host ""
+    Write-Line -Color DarkGray
+    Write-Host (" {0}" -f $Text) -ForegroundColor Yellow
+    Write-Line -Color DarkGray
+}
+
+function Write-Info {
+    param(
+        [string]$Text
+    )
+    Write-Host "[INFO] " -ForegroundColor Cyan -NoNewline
+    Write-Host $Text
+}
+
+function Write-Warn {
+    param(
+        [string]$Text
+    )
+    Write-Host "[WARN] " -ForegroundColor Yellow -NoNewline
+    Write-Host $Text
+}
+
+function Write-Status {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Label,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('PASS','FAIL','WARN','INFO','YES','NO')]
+        [string]$State,
+
+        [string]$Detail
+    )
+
+    $color = switch ($State) {
+        'PASS' { 'Green' }
+        'FAIL' { 'Red' }
+        'WARN' { 'Yellow' }
+        'INFO' { 'Cyan' }
+        'YES'  { 'Yellow' }
+        'NO'   { 'Green' }
+    }
+
+    Write-Host ("{0,-52}" -f $Label) -NoNewline
+    Write-Host ("[{0}]" -f $State) -ForegroundColor $color -NoNewline
+    if ($Detail) {
+        Write-Host ("  {0}" -f $Detail) -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host ""
+    }
+}
+
+function Show-MenuItem {
+    param(
+        [int]$Number,
+        [string]$Text,
+        [string]$Color = 'White'
+    )
+
+    Write-Host ("[{0}] " -f $Number) -ForegroundColor Cyan -NoNewline
+    Write-Host $Text -ForegroundColor $Color
+}
+
+function Read-Boolean {
+    param (
+        [string]$Question
+    )
+
+    $response = Read-Host -Prompt $Question
+    return ($response -eq 'Y' -or $response -eq 'y')
+}
+
 function Read-Integer {
-	param (
-		[string]$Question
-	)
+    param (
+        [string]$Question
+    )
 
-	$isValidInteger = $false
-	$intValue = 0
+    $isValidInteger = $false
+    $intValue = 0
 
-	while (-not $isValidInteger) {
-		$inputValue = Read-Host -prompt $Question
-		$isValidInteger = [int]::TryParse($inputValue, [ref]$intValue)
+    while (-not $isValidInteger) {
+        $inputValue = Read-Host -Prompt $Question
+        $isValidInteger = [int]::TryParse($inputValue, [ref]$intValue)
 
-		if (-not $isValidInteger) {
-			Write-Host "Invalid input. Please enter a valid integer."
-		}
-	}
+        if (-not $isValidInteger) {
+            Write-Warn "Invalid input. Please enter a valid integer."
+        }
+    }
 
-	return $intValue
+    return $intValue
 }
 
 function IsBuiltInAdministrator {
-	param (
-		[Parameter(Mandatory = $true)]
-		[string]$SID
-	)
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$SID
+    )
 
-	# Check if the SID ends with -500
-	if ($SID -match '-500$') {
-		return $true
-	} else {
-		return $false
-	}
+    return ($SID -match '-500$')
 }
 
 function Generate-RandomPassword {
-	param (
-		[int]$length
-	)
+    param(
+        [int]$Length = 20
+    )
 
-	# Define the characters allowed in the password
-	$characters = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!@#$%^&*()_+{}|:<>?"
+    if ($Length -lt 12) {
+        throw "Password length must be at least 12."
+    }
 
-	# Generate a random password
-	$securePassword = ""
-	$random = New-Object System.Random
-	for ($i = 0; $i -lt $length; $i++) {
-		$randomIndex = $random.Next(0, $characters.Length)
-		$securePassword += $characters[$randomIndex]
-	}
+    $chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*_-+=".ToCharArray()
+    $bytes = New-Object byte[] $Length
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $rng.GetBytes($bytes)
+    $rng.Dispose()
 
-	return $securePassword
+    -join ($bytes | ForEach-Object { $chars[$_ % $chars.Length] })
 }
 
-Function Log-Message()
-{
- param
-	(
-	[Parameter(Mandatory=$true)] [string] $Message
-	)
- 
-	Try {
-		#Get the current date
-		$LogDate = (Get-Date).tostring("yyyyMMdd")
- 
-		#Get the local computer Name
-		$SystemName = $env:COMPUTERNAME
+function Invoke-Netsh {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Arguments
+    )
 
-		$CurrentDir = $PSScriptRoot
- 
-		#Frame Log File with Current Directory and date
-		$LogFile = $CurrentDir + "\" + $LogDate + " " + $SystemName + " CheckNessusAuthLog.txt"
- 
-		Add-content -Path $Logfile -Value $Message
-	}
-	Catch {
-		Write-host -f Red "Error:" $_.Exception.Message 
-	}
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "netsh.exe"
+    $psi.Arguments = $Arguments
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    $null = $process.Start()
+
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+
+    if ($process.ExitCode -ne 0) {
+        throw "netsh failed: $Arguments`n$stderr`n$stdout"
+    }
+
+    return $stdout
 }
 
-function CreateAdminUser()
-{
-	param
-	(
-	[Parameter(Mandatory=$true)] [string] $password
-	)
+function CreateAdminUser {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Password
+    )
 
-	# Fixed username and password
-	$username = "Check"
+    $username = "Check"
 
-	# Create a new local user
-	New-LocalUser -Name $username -Password (ConvertTo-SecureString -AsPlainText $password -Force) -AccountNeverExpires:$true -PasswordNeverExpires:$true
-	
-	# Add the user to the local Administrators group
-	Add-LocalGroupMember -Group "Administrators" -Member $username
-	
-	Write-Output "=> User $username created and added to Administrators group."
+    New-LocalUser -Name $username -Password (ConvertTo-SecureString -AsPlainText $Password -Force) -AccountNeverExpires:$true -PasswordNeverExpires:$true | Out-Null
+    Add-LocalGroupMember -Group "Administrators" -Member $username
 
+    Write-Info "User $username created and added to Administrators group."
 }
 
-function Remove-LocalUser {
-	param(
-		[Parameter(Mandatory=$true)]
-		[string]$Username
-	)
+function Remove-TempLocalUser {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Username
+    )
 
-	# Remove the local user
-	Remove-LocalUser -Name $Username
-	
-	Write-Output "User $Username removed."
+    $user = Get-LocalUser -Name $Username -ErrorAction SilentlyContinue
+    if ($user) {
+        Microsoft.PowerShell.LocalAccounts\Remove-LocalUser -Name $Username
+        Write-Info "User $Username removed."
+    }
+    else {
+        Write-Info "User $Username was already absent."
+    }
 }
 
-# BEGINNING OF SCRIPT
+function Save-SessionState {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Session
+    )
+
+    $json = $Session | ConvertTo-Json -Depth 8
+    Set-Content -Path $Script:SessionFile -Value $json -Encoding UTF8
+    Log-Message "Session saved to $Script:SessionFile"
+}
+
+function Load-SessionState {
+    if (-not (Test-Path $Script:SessionFile)) {
+        return $null
+    }
+
+    $json = Get-Content -Path $Script:SessionFile -Raw -Encoding UTF8
+
+    if ($PSVersionTable.PSVersion.Major -ge 6) {
+        return ($json | ConvertFrom-Json -Depth 8)
+    }
+    else {
+        return ($json | ConvertFrom-Json)
+    }
+}
+
+function Remove-SessionState {
+    if (Test-Path $Script:SessionFile) {
+        Remove-Item -Path $Script:SessionFile -Force
+        Log-Message "Session file removed."
+    }
+}
+
+function Get-RegistryDwordState {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $item = Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue
+    if ($null -eq $item) {
+        return @{
+            Exists = $false
+            Value  = $null
+        }
+    }
+
+    return @{
+        Exists = $true
+        Value  = [int]$item.$Name
+    }
+}
+
+function Restore-RegistryDwordState {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $true)]
+        [bool]$Exists,
+
+        [Parameter()]
+        $Value
+    )
+
+    if ($Exists) {
+        Set-ItemProperty -Path $Path -Name $Name -Value $Value -Force
+    }
+    else {
+        Remove-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-RegistryValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $key = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+    if ($key) {
+        return $key.GetValue($Name, $null)
+    }
+
+    return $null
+}
+
+function Test-Share {
+    param(
+        [string]$SharePath
+    )
+
+    $share = Get-WmiObject -Class Win32_Share -Filter "Name='$SharePath'"
+    return [bool]$share
+}
+
+function Show-ReadinessSummary {
+    param(
+        $SetFwRules,
+        $SetRemoteReg,
+        $SetUac,
+        $SetNetworkSharing,
+        $SetAdminShares,
+        [string]$SelectedAccount,
+        [string]$SelectedInterface
+    )
+
+    $SetFwRules = [bool]$SetFwRules
+    $SetRemoteReg = [bool]$SetRemoteReg
+    $SetUac = [bool]$SetUac
+    $SetNetworkSharing = [bool]$SetNetworkSharing
+    $SetAdminShares = [bool]$SetAdminShares
+
+    Write-Section "Readiness Summary"
+
+    Write-Status "Selected account" "INFO" $SelectedAccount
+    Write-Status "Selected interface" "INFO" $SelectedInterface
+
+    Write-Status "Firewall changes required" ($(if ($SetFwRules) { 'YES' } else { 'NO' }))
+    Write-Status "RemoteRegistry changes required" ($(if ($SetRemoteReg) { 'YES' } else { 'NO' }))
+    Write-Status "UAC policy changes required" ($(if ($SetUac) { 'YES' } else { 'NO' }))
+    Write-Status "Network sharing changes required" ($(if ($SetNetworkSharing) { 'YES' } else { 'NO' }))
+    Write-Status "Administrative shares changes required" ($(if ($SetAdminShares) { 'YES' } else { 'NO' }))
+
+    $actions = New-Object System.Collections.Generic.List[string]
+    if ($SetFwRules) { [void]$actions.Add("Disable firewall profiles and allow inbound connections") }
+    if ($SetRemoteReg) { [void]$actions.Add("Enable and start RemoteRegistry") }
+    if ($SetUac) { [void]$actions.Add("Set LocalAccountTokenFilterPolicy to 1") }
+    if ($SetNetworkSharing) { [void]$actions.Add("Enable File and Printer Sharing binding on selected interface") }
+    if ($SetAdminShares) { [void]$actions.Add("Enable automatic administrative shares") }
+
+    Write-Host ""
+    if ($actions.Count -eq 0) {
+        Write-Host "No system changes are required." -ForegroundColor Green
+    }
+    else {
+        Write-Host "Actions that will be taken:" -ForegroundColor Yellow
+        foreach ($action in $actions) {
+            Write-Host (" - {0}" -f $action) -ForegroundColor White
+        }
+    }
+}
+
+function Restore-PreviousState {
+    param(
+        [switch]$KeepSessionOnFailure
+    )
+
+    $session = Load-SessionState
+    if ($null -eq $session) {
+        Write-Host "No saved restore session found."
+        Log-Message "Restore requested but no session file exists."
+        return $false
+    }
+
+    Write-Section "Restore"
+    Write-Info "Entered Restore-PreviousState"
+    Log-Message "Entered Restore-PreviousState"
+
+    $script:restoreFailed = $false
+
+    function Invoke-RestoreStep {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$StepName,
+
+            [Parameter(Mandatory = $true)]
+            [scriptblock]$Action
+        )
+
+        try {
+            Log-Message "Restore step started: $StepName"
+            & $Action
+            Log-Message "Restore step succeeded: $StepName"
+            Write-Status $StepName "PASS"
+        }
+        catch {
+            $script:restoreFailed = $true
+            Log-Message "Restore step failed: $StepName - $($_.Exception.Message)"
+            Write-Status $StepName "FAIL" $_.Exception.Message
+        }
+    }
+
+    try {
+        Log-Message "---- Restoring settings ----"
+
+        if ($session.NetworkBindingChanged -and $session.SelectedInterfaceName) {
+            Invoke-RestoreStep -StepName "Network sharing binding" -Action {
+                if ([bool]$session.NetworkSharingBindingWasEnabled) {
+                    Enable-NetAdapterBinding -Name $session.SelectedInterfaceName -ComponentID ms_server -ErrorAction Stop | Out-Null
+                }
+                else {
+                    Disable-NetAdapterBinding -Name $session.SelectedInterfaceName -ComponentID ms_server -ErrorAction Stop | Out-Null
+                }
+            }
+        }
+
+        if ($session.SharesChanged) {
+            Invoke-RestoreStep -StepName "Administrative shares registry" -Action {
+                Restore-RegistryDwordState -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name 'AutoShareWks' -Exists ([bool]$session.AutoShareWksExists) -Value $session.AutoShareWksValue
+                Restore-RegistryDwordState -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name 'AutoShareServer' -Exists ([bool]$session.AutoShareServerExists) -Value $session.AutoShareServerValue
+                Restart-Service -Name LanmanServer -Force -ErrorAction Stop
+            }
+        }
+
+        if ($session.LatfpChanged) {
+            Invoke-RestoreStep -StepName "LocalAccountTokenFilterPolicy" -Action {
+                Restore-RegistryDwordState -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'LocalAccountTokenFilterPolicy' -Exists ([bool]$session.LocalAccountTokenFilterPolicyExists) -Value $session.LocalAccountTokenFilterPolicyValue
+            }
+        }
+
+        if ($session.RemoteRegistryChanged) {
+            Invoke-RestoreStep -StepName "RemoteRegistry service" -Action {
+                $startupType = [string]$session.RemoteRegistryStartType
+
+                switch ($startupType) {
+                    'Auto'      { Set-Service -Name RemoteRegistry -StartupType Automatic -ErrorAction Stop }
+                    'Automatic' { Set-Service -Name RemoteRegistry -StartupType Automatic -ErrorAction Stop }
+                    'Manual'    { Set-Service -Name RemoteRegistry -StartupType Manual -ErrorAction Stop }
+                    'Disabled'  { Set-Service -Name RemoteRegistry -StartupType Disabled -ErrorAction Stop }
+                    default     { Set-Service -Name RemoteRegistry -StartupType Manual -ErrorAction Stop }
+                }
+
+                if ([bool]$session.RemoteRegistryWasRunning) {
+                    Start-Service -Name RemoteRegistry -ErrorAction Stop
+                }
+                else {
+                    Stop-Service -Name RemoteRegistry -Force -ErrorAction Stop
+                }
+            }
+        }
+
+        if ($session.FirewallChanged -and $session.FirewallProfiles) {
+            Invoke-RestoreStep -StepName "Firewall profiles" -Action {
+                foreach ($fw in $session.FirewallProfiles) {
+                    $profileToken = switch -Regex ($fw.Name) {
+                        '^Domain$'  { 'domainprofile'; break }
+                        '^Private$' { 'privateprofile'; break }
+                        '^Public$'  { 'publicprofile'; break }
+                        default     { throw "Unknown firewall profile name '$($fw.Name)'" }
+                    }
+
+                    if ([bool]$fw.Enabled) {
+                        Invoke-Netsh "advfirewall set $profileToken state on" | Out-Null
+                    }
+                    else {
+                        Invoke-Netsh "advfirewall set $profileToken state off" | Out-Null
+                    }
+
+                    Set-NetFirewallProfile -Name $fw.Name -DefaultInboundAction $fw.DefaultInboundAction -ErrorAction Stop
+                }
+            }
+        }
+
+        if ($session.TempAccountCreated -and $session.TempAccountName) {
+            Invoke-RestoreStep -StepName "Temporary administrator account removal" -Action {
+                $tempUser = Get-LocalUser -Name $session.TempAccountName -ErrorAction SilentlyContinue
+                if ($tempUser) {
+                    Remove-LocalGroupMember -Group 'Administrators' -Member $session.TempAccountName -ErrorAction SilentlyContinue
+                    Remove-TempLocalUser -Username $session.TempAccountName | Out-Null
+                }
+            }
+        }
+
+        if ($session.RealAdministratorEnabledByScript -and $session.RealAdministratorName -and (-not [bool]$session.RealAdministratorWasEnabled)) {
+            Invoke-RestoreStep -StepName "Built-in Administrator disable" -Action {
+                $realAdmin = Get-LocalUser -Name $session.RealAdministratorName -ErrorAction SilentlyContinue
+                if ($realAdmin) {
+                    Disable-LocalUser -Name $session.RealAdministratorName -ErrorAction Stop
+                }
+            }
+        }
+
+        if ($script:restoreFailed) {
+            Write-Host ""
+            Write-Warn "Restore completed with one or more errors."
+            Write-Warn "Check the log file for details: $Script:LogFolder"
+            Log-Message "Restore completed with errors."
+
+            if (-not $KeepSessionOnFailure) {
+                Write-Warn "The session file was kept so you can retry restore."
+            }
+
+            return $false
+        }
+        else {
+            Log-Message "Restore completed successfully."
+            Remove-SessionState
+            Write-Host ""
+            Write-Host "The system has been restored to its previous state." -ForegroundColor Green
+            return $true
+        }
+    }
+    catch {
+        Log-Message "Restore failed fatally: $($_.Exception.Message)"
+        Write-Host -ForegroundColor Red "Restore failed fatally: $($_.Exception.Message)"
+        if ($_.ScriptStackTrace) {
+            Write-Host -ForegroundColor DarkRed $_.ScriptStackTrace
+            Log-Message $_.ScriptStackTrace
+        }
+
+        if (-not $KeepSessionOnFailure) {
+            Write-Warn "The session file has been kept so you can retry."
+        }
+
+        return $false
+    }
+}
+
+Write-Title "Check Nessus Authenticated Scan Readiness"
+
 $SystemName = $env:COMPUTERNAME
-$LogDate = (Get-Date).tostring("yyyy-MM-dd HH-mm-ss")
+$LogDate = (Get-Date).ToString("yyyy-MM-dd HH-mm-ss")
 $header = "Nessus Authenticated Scan Readiness Check for $SystemName - Performed on $LogDate"
 $line = "-" * $header.Length
 Log-Message "$header"
 Log-Message "$line`n"
 
-
-# -------------------------------------------------------------------
-# Verify account and selecting admin account to perform the scan with
-# -------------------------------------------------------------------
-
 $realadmin = $false
 $selectedaccount = ""
 
-# Getting the current logged on user and verify whether it is a local administrator account or not
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $currentUserName = $currentPrincipal.Identities.Name
 $isadmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
-if (!$isadmin)
-{
-	Write-Host "`nThis script has to be run as administrator - exiting now`n"
-	exit
+if (-not $isadmin) {
+    Write-Host "`nThis script has to be run as administrator - exiting now`n"
+    exit 1
 }
 
-# Getting list of local administrative users and let the user select one
+if ($RestoreOnly) {
+    $restoreOk = Restore-PreviousState -KeepSessionOnFailure
+    Write-Host ""
+    Read-Host "Press Enter to close" | Out-Null
+    if ($restoreOk) { exit 0 } else { exit 1 }
+}
+
+if ((Test-Path $Script:SessionFile) -and -not $ForceRestore) {
+    Write-Warn "A previous restore session was found."
+    $doRestore = Read-Boolean -Question "Do you want to restore the previous session now (Y/N)?"
+    if ($doRestore) {
+        $restoreOk = Restore-PreviousState -KeepSessionOnFailure
+        Write-Host ""
+        Read-Host "Press Enter to close" | Out-Null
+        if ($restoreOk) { exit 0 } else { exit 1 }
+    }
+}
+
 $administratorsGroup = Get-LocalGroupMember -Group "Administrators"
 $adminsArray = @()
 $index = 1
 
-Write-Host "`nList of the local Administrators on this system:`n"
+Write-Section "Select administrator account"
+Show-MenuItem -Number 0 -Text "Create a new local administrator account - 'Check'" -Color Yellow
 
-Write-Host "0 - Create a new local administrator account - 'Check'"
 foreach ($member in $administratorsGroup) {
-	$name = $member.Name
-	$realadmin = IsBuiltInAdministrator -SID $member.SID
-	$adminsArray += [PSCustomObject]@{
-		RowNumber = $index
-		Name = $name
-		ID = $member.SID
-		RealAdmin = $realadmin
-	}
-	Write-Host $index -NoNewline
-	Write-Host " - " -NoNewline
-	Write-Host $name -NoNewline
-	if ($realadmin) 
-	{
-		Write-Host " - Real Administrator" -NoNewline
-	}
-	else 
-	{
-		Write-Host "" -NoNewline
-	}
-	if ($name -eq $currentUserName)
-	{
-		Write-Host " - Current logged on user"
-	}
-	else 
-		{
-		Write-Host ""
-	}
-	$index++
+    $name = $member.Name
+    $isRealAdmin = IsBuiltInAdministrator -SID $member.SID
+
+    $adminsArray += [PSCustomObject]@{
+        RowNumber = $index
+        Name      = $name
+        SID       = $member.SID
+        RealAdmin = $isRealAdmin
+    }
+
+    $extra = @()
+    if ($isRealAdmin) { $extra += "Real Administrator" }
+    if ($name -eq $currentUserName) { $extra += "Current logged on user" }
+
+    if ($extra.Count -gt 0) {
+        Show-MenuItem -Number $index -Text ("{0} ({1})" -f $name, ($extra -join ", "))
+    }
+    else {
+        Show-MenuItem -Number $index -Text $name
+    }
+
+    $index++
 }
 
 $selectedAccountId = Read-Integer -Question "`nSelect the administrator account you want to use for authenticated scans or select '0' to create a temporary account"
-while ($selectedAccountId -lt 0)
-{
-	Write-Host "No Account has been selected. Please enter a valid number."
-	$selectedAccountId = Read-Integer -Question "`nSelect the administrator account you want to use for authenticated scans"
+while ($selectedAccountId -lt 0 -or $selectedAccountId -gt $adminsArray.Count) {
+    Write-Warn "No valid account has been selected. Please enter a valid number."
+    $selectedAccountId = Read-Integer -Question "`nSelect the administrator account you want to use for authenticated scans or select '0' to create a temporary account"
 }
+
 if ($selectedAccountId -gt 0) {
-	$rowNumber = [int]$selectedAccountId
-	$selectedAdmin  = $adminsArray | Where-Object { $_.RowNumber -eq $rowNumber }
-	$realadmin = $selectedAdmin.RealAdmin
-	$selectedaccount =  $selectedAdmin.Name
-	$isadmin = $true
+    $rowNumber = [int]$selectedAccountId
+    $selectedAdmin = $adminsArray | Where-Object { $_.RowNumber -eq $rowNumber } | Select-Object -First 1
+
+    if ($null -eq $selectedAdmin) {
+        throw "Failed to resolve selected administrator account."
+    }
+
+    $realadmin = [bool]$selectedAdmin.RealAdmin
+    $selectedaccount = $selectedAdmin.Name
+    $isadmin = $true
 }
-elseif ($selectedAccountId -eq 0) 
-{
-	$selectedaccount = "Check"
-	$add_account = $true
-	$isadmin = $true
+elseif ($selectedAccountId -eq 0) {
+    $selectedaccount = "Check"
+    $add_account = $true
+    $isadmin = $true
 }
 
-Write-Host "Selected user account: " -NoNewline
-Write-Host $selectedaccount
+Write-Host ""
+Write-Status "Selected user account" "INFO" $selectedaccount
+Write-Status "Account is administrator" ($(if ($isadmin) { 'PASS' } else { 'FAIL' }))
 Log-Message "Selected user account: $selectedaccount"
-Write-Host "Account is administrator: " -NoNewline
-if ($isadmin) { 
-	Write-Host -ForegroundColor Green "PASS" 
-	Log-Message "Account is an administrator.`n"
+
+Write-Section "Select scan interface"
+
+$Interfaces = Get-NetIPConfiguration | ForEach-Object {
+    $cfg = $_
+    foreach ($ip in $cfg.AllIPAddresses) {
+        if ($ip.IPAddress -notmatch '^(::1|fe80::|169\.254\.)') {
+            [PSCustomObject]@{
+                InterfaceIndex       = $cfg.InterfaceIndex
+                InterfaceAlias       = $cfg.InterfaceAlias
+                InterfaceDescription = $cfg.InterfaceDescription
+                IPAddress            = $ip.IPAddress
+                PrefixLength         = $ip.PrefixLength
+                DeviceId             = $cfg.NetAdapter.DeviceID
+            }
+        }
+    }
 }
-else { 
-	Write-Host -ForegroundColor Red "FAIL" 
-	Log-Message "Account is NOT an administrator.`n"
+
+if (-not $Interfaces) {
+    throw "No usable network interfaces were found."
 }
 
+$Interfaces | Sort-Object InterfaceIndex, IPAddress | Format-Table InterfaceIndex, InterfaceAlias, IPAddress, PrefixLength, InterfaceDescription -AutoSize
 
-# -------------------------------------------------
-# Getting the Interface and IP address information
-# to identify the interface on the system that will
-# be used for authenticated scanning
-# -------------------------------------------------
-
-$Interfaces = Get-NetIPConfiguration | Select-object InterfaceDescription -ExpandProperty AllIPAddresses | Where-Object { $_.IPAddress -notmatch "^(::1|fe80::|169\.254\.\d{1,3}\.\d{1,3})" } | Select ifIndex, IPAddress, PrefixLength, InterfaceAlias  | Format-Table *
-
-Write-Output $Interfaces
+$validInterfaceIds = $Interfaces.InterfaceIndex | Sort-Object -Unique
 $scanning_interface_id = Read-Integer -Question "Enter the Interface Index that will be used for the authenticated scan"
-$scanning_interface = Get-NetIPConfiguration | Where-Object { $_.InterfaceIndex -eq $scanning_interface_id }
-$scanning_interface_deviceid = $scanning_interface.NetAdapter.DeviceID
 
-# ---------------------
-# Firewall verification
-# ---------------------
-
-Write-Host -ForegroundColor Yellow "`nVerifying if the firewall service is started and what its startup type is set to...`n"
-
-$firewallservice = Get-Service mpssvc | Select Status, StartType
-Write-Host "Firewall service is not running: " -NoNewline
-if ($firewallservice.Status -eq "Running")
-{
-	Write-Host -ForegroundColor Red "FAIL - Checking the firewall policy now"
-	Log-Message "Firewall service is running - checking policies and default inbound actions..."
-
-	Write-Host -ForegroundColor Yellow "`nVerifying the firewall policies and Default Inbound Actions that are configured on the system."
-	Write-Host -ForegroundColor Yellow "For each profile, either the Policy or the Default Inbound Action showing up as PASS is ok...`n"
-
-	$fw_policies = Get-NetFirewallProfile -PolicyStore ActiveStore | select Name, Enabled, DefaultInboundAction
-
-	Write-Host "Firewall Policy is set to Disabled: "
-	Log-Message "Checking Firewall Policy settings:"
-	Foreach ($fw_policy in $fw_policies)
-	{
-		Write-Host "- $($fw_policy.Name):`t" -NoNewline
-		if ($fw_policy.Enabled)
-		{
-			Write-Host -ForegroundColor Red "FAIL"
-			$set_fw_rules = $true
-			Log-Message "- $($fw_policy.Name) is Enabled"
-		}
-		else 
-		{
-			Write-Host -ForegroundColor Green "PASS"
-			Log-Message "- $($fw_policy.Name) is Disabled"
-		}
-	}
-	Write-Host "Firewall DefaultInboundAction is set to Allow: "
-	Log-Message "Checking Firewall DefaultInboundAction settings:"
-	Foreach ($fw_policy in $fw_policies)
-	{
-		Write-Host "- $($fw_policy.Name):`t" -NoNewline
-		if ($fw_policy.DefaultInboundAction -eq "Block")
-		{
-			Write-Host -ForegroundColor Red "FAIL"
-			$set_fw_rules = $true
-			Log-Message "- $($fw_policy.Name) is set to Block"
-		}
-		else 
-		{
-			Write-Host -ForegroundColor Green "PASS"
-			Log-Message "- $($fw_policy.Name) is set to Allow"
-		}
-	}
-}
-else 
-{
-	Write-Host -ForegroundColor Green "PASS"
-	Log-Message "Firewall service is not running - good to go..."
-	# ALL good, nothing to do
+while ($validInterfaceIds -notcontains $scanning_interface_id) {
+    Write-Warn "Invalid interface index selected."
+    $scanning_interface_id = Read-Integer -Question "Enter the Interface Index that will be used for the authenticated scan"
 }
 
-# -----------------------------------
-# Verify network sharing on interface
-# -----------------------------------
+$selectedInterface = $Interfaces | Where-Object { $_.InterfaceIndex -eq $scanning_interface_id } | Select-Object -First 1
+$scanning_interface_deviceid = $selectedInterface.DeviceId
 
-Write-Host -ForegroundColor Yellow "`nVerifying if the network sharing service is installed on the selected interface...`n"
+Write-Status "Selected interface" "INFO" ("{0} ({1})" -f $selectedInterface.InterfaceAlias, $selectedInterface.IPAddress)
+
+Write-Section "Running readiness checks"
+
+$firewallservice = Get-Service mpssvc | Select-Object Status, StartType
+
+if ($firewallservice.Status -eq "Running") {
+    Write-Status "Firewall service is not running" "FAIL"
+    Log-Message "Firewall service is running - checking policies and default inbound actions..."
+
+    $fw_policies = Get-NetFirewallProfile -PolicyStore ActiveStore | Select-Object Name, Enabled, DefaultInboundAction
+
+    foreach ($fw_policy in $fw_policies) {
+        if ($fw_policy.Enabled) {
+            Write-Status ("Firewall policy disabled - " + $fw_policy.Name) "FAIL"
+            $set_fw_rules = $true
+            Log-Message "- $($fw_policy.Name) is Enabled"
+        }
+        else {
+            Write-Status ("Firewall policy disabled - " + $fw_policy.Name) "PASS"
+            Log-Message "- $($fw_policy.Name) is Disabled"
+        }
+    }
+
+    foreach ($fw_policy in $fw_policies) {
+        if ($fw_policy.DefaultInboundAction -eq "Block") {
+            Write-Status ("Firewall inbound allow - " + $fw_policy.Name) "FAIL"
+            $set_fw_rules = $true
+            Log-Message "- $($fw_policy.Name) inbound is Block"
+        }
+        else {
+            Write-Status ("Firewall inbound allow - " + $fw_policy.Name) "PASS"
+            Log-Message "- $($fw_policy.Name) inbound is Allow"
+        }
+    }
+}
+else {
+    Write-Status "Firewall service is not running" "PASS"
+    Log-Message "Firewall service is not running - good to go..."
+}
 
 $instance_filter = $scanning_interface_deviceid + "::ms_server"
 $adapter_bindings = Get-NetAdapterBinding | Where-Object { $_.InstanceID -eq $instance_filter } | Select-Object Name, Enabled
-$adapter_binding = $adapter_bindings.Enabled
+$adapter_binding = [bool]$adapter_bindings.Enabled
 
-Write-Host "Network sharing enabled on selected interface ($($adapter_bindings.Name)): " -NoNewline
-if ($adapter_binding)
-{
-	Write-Host -ForegroundColor Green "PASS"
-	Log-Message "Network sharing is enabled on selected interface ($($adapter_bindings.Name))"
+if ($adapter_binding) {
+    Write-Status "Network sharing enabled on selected interface" "PASS" $adapter_bindings.Name
+    Log-Message "Network sharing is enabled on selected interface ($($adapter_bindings.Name))"
 }
-else 
-{
-	Write-Host -ForegroundColor Red "FAIL"
-	Log-Message "Network sharing is NOT enabled on selected interface ($($adapter_bindings.Name))"
-	$set_network_sharing = $true
+else {
+    Write-Status "Network sharing enabled on selected interface" "FAIL" $adapter_bindings.Name
+    Log-Message "Network sharing is NOT enabled on selected interface ($($adapter_bindings.Name))"
+    $set_network_sharing = $true
 }
 
-# -----------------------
-# Remote registry service
-# -----------------------
+$remoteregservice = Get-Service RemoteRegistry | Select-Object Status, StartType
 
-Write-Host -ForegroundColor Yellow "`nVerifying if the remote registry service is started and what its startup type is set to...`n"
-
-$remoteregservice = Get-Service RemoteRegistry | Select Status, StartType
-Write-Host "Remote registry service is running: " -NoNewline
-if ($remoteregservice.Status -eq "Running")
-{
-	Write-Host -ForegroundColor Green "PASS"
-	Log-Message "Remote registry service is running"
+if ($remoteregservice.Status -eq "Running") {
+    Write-Status "Remote registry service is running" "PASS"
+    Log-Message "Remote registry service is running"
 }
-else 
-{
-	Write-Host -ForegroundColor Red "FAIL"
-	Log-Message "Remote registry service is NOT running"
-	$set_remote_reg = $true
-}
-Write-Host "Remote registry service startup type is not disabled: " -NoNewline
-if ($remoteregservice.StartType -ne "Disabled")
-{
-	Write-Host -ForegroundColor Green "PASS"
-	Log-Message "Remote registry service startup type is not set to disabled"
-}
-else 
-{
-	Write-Host -ForegroundColor Red "FAIL"
-	Log-Message "Remote registry service startup type is set to disabled"
-	$set_remote_reg = $true
+else {
+    Write-Status "Remote registry service is running" "FAIL"
+    Log-Message "Remote registry service is NOT running"
+    $set_remote_reg = $true
 }
 
-
-
-# ------------------------------------------------
-# Verify UAC LocalAccountTokenFilterPolicy setting
-# ------------------------------------------------
-
-Write-Host -ForegroundColor Yellow "`nVerifying if the UAC LocalAccountTokenFilterPolicy registry key is set to allow non default administrators to perform scanning...`n"
-
-Write-Host "UAC LocalAccountTokenFilterPolicy registry key set to 1: " -NoNewline
-
-# Gets the specified registry value or $null if it is missing
-function Get-RegistryValue($path, $name)
-{
-	$key = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
-	if ($key) {
-		$key.GetValue($name, $null)
-	}
+if ($remoteregservice.StartType -ne "Disabled") {
+    Write-Status "Remote registry service startup type is not disabled" "PASS"
+    Log-Message "Remote registry service startup type is not set to disabled"
 }
-$LocalAccountTokenFilterPolicy = Get-RegistryValue HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System LocalAccountTokenFilterPolicy
-if ($LocalAccountTokenFilterPolicy -ne 1)
-{
-	Write-Host -ForegroundColor Red "FAIL"
-	$set_uac = $true
-} else { Write-Host -ForegroundColor Green "PASS" }
-
-# ------------------------------
-# Checking Administrative shares
-# ------------------------------
-
-Write-Host -ForegroundColor Yellow "`nVerifying if the default administrative shares are enabled...`n"
-
-# Function to check if a share exists
-function Test-Share {
-	param([string]$sharePath)
-	$share = Get-WmiObject -Class Win32_Share -Filter "Name='$sharePath'"
-	return [bool]$share
+else {
+    Write-Status "Remote registry service startup type is not disabled" "FAIL"
+    Log-Message "Remote registry service startup type is set to disabled"
+    $set_remote_reg = $true
 }
 
-# Check if C$, ADMIN$, and IPC$ shares exist
-$isAdminShareEnabled = Test-Share "C$" -and Test-Share "ADMIN$" -and Test-Share "IPC$"
+$LocalAccountTokenFilterPolicy = Get-RegistryValue -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'LocalAccountTokenFilterPolicy'
 
-Write-Host "Administrative shares are enabled on this system: " -NoNewline
+if ($LocalAccountTokenFilterPolicy -ne 1) {
+    Write-Status "UAC LocalAccountTokenFilterPolicy set to 1" "FAIL"
+    Log-Message "LocalAccountTokenFilterPolicy is not set to 1"
+    $set_uac = $true
+}
+else {
+    Write-Status "UAC LocalAccountTokenFilterPolicy set to 1" "PASS"
+    Log-Message "LocalAccountTokenFilterPolicy is set to 1"
+}
+
+$isAdminShareEnabled = (Test-Share -SharePath "C$") -and (Test-Share -SharePath "ADMIN$") -and (Test-Share -SharePath "IPC$")
+
 if ($isAdminShareEnabled) {
-	Write-Host -ForegroundColor Green "PASS"
-} else {
-	Write-Host -ForegroundColor Red "FAIL"
-	$set_admin_shares = $true
+    Write-Status "Administrative shares are enabled" "PASS"
+    Log-Message "Administrative shares are enabled"
+}
+else {
+    Write-Status "Administrative shares are enabled" "FAIL"
+    Log-Message "Administrative shares are NOT enabled"
+    $set_admin_shares = $true
 }
 
-# Check if the administrative shares are created automatically - Wks or Server
-Write-Host "Administrative shares are automatically started after a reboot: " -NoNewline
-$autoShareWksValue = Get-ItemProperty -ErrorAction SilentlyContinue -Path HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters -Name AutoShareWks
-$autoShareServerValue = Get-ItemProperty -ErrorAction SilentlyContinue -Path  HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters -Name AutoShareServer
-if (($autoShareWksValue -eq 0) -or ($autoShareServerValue -eq 0))
-{
-	Write-Host -ForegroundColor Red "FAIL"
+$autoShareWksState = Get-RegistryDwordState -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name 'AutoShareWks'
+$autoShareServerState = Get-RegistryDwordState -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name 'AutoShareServer'
+
+if (($autoShareWksState.Exists -and $autoShareWksState.Value -eq 0) -or
+    ($autoShareServerState.Exists -and $autoShareServerState.Value -eq 0)) {
+    Write-Status "Administrative shares auto-created after reboot" "FAIL"
+    Log-Message "Administrative shares are not automatically recreated after reboot"
+    $set_admin_shares = $true
 }
-else
-{
-	Write-Host -ForegroundColor Green "PASS"
+else {
+    Write-Status "Administrative shares auto-created after reboot" "PASS"
+    Log-Message "Administrative shares are automatically recreated after reboot"
 }
 
-# --------------------------------
-# Making necessary changes section
-# --------------------------------
+Show-ReadinessSummary `
+    -SetFwRules ([bool]$set_fw_rules) `
+    -SetRemoteReg ([bool]$set_remote_reg) `
+    -SetUac ([bool]$set_uac) `
+    -SetNetworkSharing ([bool]$set_network_sharing) `
+    -SetAdminShares ([bool]$set_admin_shares) `
+    -SelectedAccount $selectedaccount `
+    -SelectedInterface ("{0} ({1})" -f $selectedInterface.InterfaceAlias, $selectedInterface.IPAddress)
 
+$session = [ordered]@{
+    MachineName                         = $env:COMPUTERNAME
+    CreatedUtc                          = (Get-Date).ToUniversalTime().ToString("o")
+    SelectedInterfaceName               = $selectedInterface.InterfaceAlias
+
+    FirewallProfiles                    = @()
+    RemoteRegistryStartType             = $null
+    RemoteRegistryWasRunning            = $false
+
+    LocalAccountTokenFilterPolicyExists = $false
+    LocalAccountTokenFilterPolicyValue  = $null
+
+    AutoShareWksExists                  = $false
+    AutoShareWksValue                   = $null
+    AutoShareServerExists               = $false
+    AutoShareServerValue                = $null
+
+    NetworkSharingBindingWasEnabled     = $false
+
+    TempAccountCreated                  = $false
+    TempAccountName                     = $null
+
+    RealAdministratorName               = $null
+    RealAdministratorWasEnabled         = $null
+    RealAdministratorEnabledByScript    = $false
+
+    FirewallChanged                     = $false
+    RemoteRegistryChanged               = $false
+    LatfpChanged                        = $false
+    SharesChanged                       = $false
+    NetworkBindingChanged               = $false
+}
+
+$session.FirewallProfiles = @(
+    Get-NetFirewallProfile -PolicyStore ActiveStore | ForEach-Object {
+        @{
+            Name                 = $_.Name
+            Enabled              = [bool]$_.Enabled
+            DefaultInboundAction = $_.DefaultInboundAction.ToString()
+        }
+    }
+)
+
+$remoteRegistryCim = Get-CimInstance Win32_Service -Filter "Name='RemoteRegistry'"
+$session.RemoteRegistryStartType = [string]$remoteRegistryCim.StartMode
+$session.RemoteRegistryWasRunning = ([string]$remoteRegistryCim.State -eq 'Running')
+
+$latfpState = Get-RegistryDwordState -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'LocalAccountTokenFilterPolicy'
+$session.LocalAccountTokenFilterPolicyExists = $latfpState.Exists
+$session.LocalAccountTokenFilterPolicyValue = $latfpState.Value
+
+$session.AutoShareWksExists = $autoShareWksState.Exists
+$session.AutoShareWksValue = $autoShareWksState.Value
+$session.AutoShareServerExists = $autoShareServerState.Exists
+$session.AutoShareServerValue = $autoShareServerState.Value
+
+$instance_filter = $scanning_interface_deviceid + "::ms_server"
+$adapter_bindings = Get-NetAdapterBinding | Where-Object { $_.InstanceID -eq $instance_filter } | Select-Object Name, Enabled
+$adapter_binding = [bool]$adapter_bindings.Enabled
+$session.NetworkSharingBindingWasEnabled = $adapter_binding
+
+Save-SessionState -Session $session
 
 $make_changes = Read-Boolean -Question "`nDo you want to make the necessary changes to allow authenticated scanning (Y/N)?"
-if ($make_changes)
-{
-	# in this choice, the previous states are not looked at, all necessary changes are done to make sure auth scanning will be succesfull.
-	Log-Message "`n---- Making necessary changes to the system to allow authenticated scanning ----"
-	if ($realadmin) 
-	{
-		# Check if the account is disabled or not
-		$computerName, $accountName = $selectedaccount -split "\\"
-		$isEnabled = (Get-LocalUser $accountName -ErrorAction Stop).enabled
-		if ($isEnabled)
-		{
-			Write-Host -ForeGroundColor Yellow "You selected to use the Real Administrator..."
-			$continuerealadmin = Read-Boolean -Question "Do you want to continue using the real administrator (Y/N)?"
-			$continuerealadminchangepass = Read-Boolean -Question "Do you want to change the password of the real administrator (Y/N)?"
-		}
-		else
-		{
-			Write-Host -ForeGroundColor Yellow "You selected to use the Real Administrator while it is disabled..."
-			Write-Host -ForeGroundColor Yellow "If you continue, the password will be reset and the account enabled when you are making the changes..."
-			$continuerealadminchangepassenable = Read-Boolean -Question "Do you want to continue using the real administrator, enable the account and change the password (Y/N)?"
-		}
-		if ($continuerealadminchangepass)
-		{
-			# Prompt for password input securely
-			$securePassword = Read-Host -Prompt "Enter the new password for the user account" -AsSecureString
-			# Set the password for the user account
-			Set-LocalUser -Name $accountName -Password $securePassword
-			Log-Message "Password of $accountName has been changed."
-		}
-		if ($continuerealadminchangepassenable)
-		{
-			# Enabling the account and setting the password
-			Enable-LocalUser -Name $accountName
-			Log-Message "$accountName has been enabled."
-			# Prompt for password input securely
-			$securePassword = Read-Host -Prompt "Enter the new password for the user account" -AsSecureString
-			# Set the password for the user account
-			Set-LocalUser -Name $accountName -Password $securePassword
-			Log-Message "Password of $accountName has been changed."
-		}
-	}
+if ($make_changes) {
+    $restoreAttempted = $false
 
-	if ($add_account)
-	{
-		Write-Host -ForeGroundColor Yellow "Adding a temporary user account ('Check') and adding it to the Administrators group..."
-		$password_provided = Read-Boolean -Question "Do you want to provide a password? Select No to use a default temporary password. (Y/N)"
-		if ($password_provided)
-		{
-			$password = Read-Host -Prompt "Enter the new password for the user account"
-		}
-		else 
-		{
-			$password = "Ch3ckPass123!?"
-		}
+    try {
+        Log-Message "---- Making necessary changes to the system to allow authenticated scanning ----"
+        Write-Section "Apply changes"
+        Write-Info "Entering apply phase."
 
-		CreateAdminUser $password
-	}
+        if ($realadmin) {
+            $accountName = $selectedaccount
+            if ($selectedaccount -like "*\*") {
+                $computerName, $accountName = $selectedaccount -split "\\", 2
+            }
 
-	# Both the firewall state as well as the Default Inbound Actions are changed as sometimes, Group policies prevent disabling the firewall
-	if ($set_fw_rules)
-	{
-		Write-Host "Disabling firewall and allowing all inbound connections for all profiles..."
-		Set-NetFirewallProfile -Name Domain -Enabled False -DefaultInboundAction Allow
-		Set-NetFirewallProfile -Name Private -Enabled False -DefaultInboundAction Allow
-		Set-NetFirewallProfile -Name Public -Enabled False -DefaultInboundAction Allow
-		Log-Message "Local Firewall policies set to Disabled and Default Inbound Action to allow all traffic."
-	}
+            $isEnabled = (Get-LocalUser $accountName -ErrorAction Stop).Enabled
+            $session.RealAdministratorName = $accountName
+            $session.RealAdministratorWasEnabled = [bool]$isEnabled
+            Save-SessionState -Session $session
 
-	# Set the startup type to Manual for the remote registry service and start it
-	if ($set_remote_reg)
-	{
-		Write-Host "Enabling and starting the Remote registry service..."
-		Set-Service RemoteRegistry -StartupType Manual -Status Running
-		Log-Message "Remote registry service has been enabled."
-	}
+            $continuerealadminchangepass = $false
+            $continuerealadminchangepassenable = $false
 
-	# Allowing remote access to the Admin shares even if UAC is enabled
-	if ($set_uac)
-	{
-		Write-Host "Creating the LocalAccountTokenFilterPolicy registry key or setting it to 1 to allow scanning..."
-		Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "LocalAccountTokenFilterPolicy" -Value 1 -Force
-		Log-Message "LocalAccountTokenFilterPolicy registry key created and set to 1 to allow scanning"
-	}
+            if ($isEnabled) {
+                Write-Warn "You selected to use the Real Administrator."
+                $continuerealadmin = Read-Boolean -Question "Do you want to continue using the real administrator (Y/N)?"
+                if (-not $continuerealadmin) {
+                    throw "User aborted use of the built-in Administrator account."
+                }
 
-	# Enable the ms_server adapter binding if it is not enabled
-	if (-not($adapter_binding) -and $set_network_sharing)
-	{
-		Write-Host "Enabling the Windows network sharing binding on the interface..."
-		Enable-NetAdapterBinding -Name $($adapter_bindings.Name) -ComponentID ms_server
-		Log-Message "Windows network sharing binding on the interface has been enabled"
-	}
+                $continuerealadminchangepass = Read-Boolean -Question "Do you want to change the password of the real administrator (Y/N)?"
+            }
+            else {
+                Write-Warn "You selected to use the Real Administrator while it is disabled."
+                $continuerealadminchangepassenable = Read-Boolean -Question "Do you want to continue using the real administrator, enable the account and change the password (Y/N)?"
+                if (-not $continuerealadminchangepassenable) {
+                    throw "User aborted use of the disabled built-in Administrator account."
+                }
+            }
 
-	# Setting the automatic creation of admin shares and restart the server service
-	if ((($autoShareWksValue -eq 0) -or ($autoShareServerValue -eq 0)) -and $set_admin_shares)
-	{
-		Write-Host "Making sure that the administrative shares are started during boot and restart the LanmanServer service to enable these..."
-		if ($autoShareWksValue -eq 0) {Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "AutoShareWks" -Value 1 -Force}
-		if ($autoShareServerValue -eq 0) {Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "AutoShareServer" -Value 1 -Force}
-		Restart-Service -Name LanmanServer
-		Log-Message "Enabled the administrative shares"
-	}
+            if ($continuerealadminchangepass) {
+                $securePassword = Read-Host -Prompt "Enter the new password for the user account" -AsSecureString
+                Set-LocalUser -Name $accountName -Password $securePassword
+                Write-Status "Built-in Administrator password changed" "PASS"
+                Log-Message "Password of $accountName has been changed."
+            }
 
-	Write-Host -ForegroundColor Red "!! Do NOT close this script while scanning or reverting to previous settings will no longer be possible !!"
-	Read-Host -prompt "Perform the authenticated scanning and then press Enter to continue the script and restore to the previous state ..."
-	Write-Host "Reverting changes after scanning..."
-	Log-Message "`n---- Restoring settings ----"
+            if ($continuerealadminchangepassenable) {
+                Enable-LocalUser -Name $accountName
+                $session.RealAdministratorEnabledByScript = $true
+                Save-SessionState -Session $session
 
-		if ($set_fw_rules)
-		{
-			Write-Host "Re-enabling firewall and setting the Default Inbound Action back to previous settings..."
-			# Firewall profile and policy values have been queried before and stored in the fw_policies variable
-			Foreach ($fw_policy in $fw_policies)
-			{
-				Set-NetFirewallProfile -Name $($fw_policy.Name) -Enabled $($fw_policy.Enabled) -DefaultInboundAction $($fw_policy.DefaultInboundAction)
-				Log-Message "Reverted Firewall $($fw_policy.Name) to $($fw_policy.Enabled) and DefaultInboundAction to $($fw_policy.DefaultInboundAction)"
-			}
-		}
+                Log-Message "$accountName has been enabled."
+                $securePassword = Read-Host -Prompt "Enter the new password for the user account" -AsSecureString
+                Set-LocalUser -Name $accountName -Password $securePassword
+                Write-Status "Built-in Administrator enabled" "PASS"
+                Write-Status "Built-in Administrator password changed" "PASS"
+                Log-Message "Password of $accountName has been changed."
+            }
+        }
 
+        if ($add_account) {
+            Write-Info "Adding a temporary user account ('Check') and adding it to the Administrators group..."
+            $password_provided = Read-Boolean -Question "Do you want to provide a password? Select No to use a generated temporary password. (Y/N)"
 
-		# Remote registry service previous value is stored in remoteregservice.StartType - we'll stop the service afterwards, regardless if it was previously running
-		# if the service is needed and startuptype is set to manual or automatic, it will fire up when needed
-		if ($set_remote_reg)
-		{
-			Write-Host "Disabling and stopping the Remote registry service..."
-			Log-Message "Disabling and stopping the Remote registry service..."
-			Set-Service RemoteRegistry -StartupType $($remoteregservice.StartType)
-			Get-Service RemoteRegistry | Stop-Service -Force
-		}
+            if ($password_provided) {
+                $password = Read-Host -Prompt "Enter the password for the temporary user account"
+            }
+            else {
+                $password = Generate-RandomPassword -Length 20
+                Write-Host "Generated temporary password: $password" -ForegroundColor Yellow
+            }
 
-		# The previous state is stored in LocalAccountTokenFilterPolicy - if this variable is null, the created value is removed.
-		# if it was not null, the previous value is restored
-		if ($set_uac)
-		{
-			Write-Host "Remove the LocalAccountTokenFilterPolicy registry key or setting it (back) to 0..."
-			if ($LocalAccountTokenFilterPolicy -eq $null)
-			{
-				Remove-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name LocalAccountTokenFilterPolicy -Force
-			}
-			else
-			{
-				Set-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name LocalAccountTokenFilterPolicy -Value 0
-			}
-			Log-Message "Reverted LocalAccountTokenFilterPolicy to previous state"
-		}
+            CreateAdminUser -Password $password
+            $session.TempAccountCreated = $true
+            $session.TempAccountName = "Check"
+            Save-SessionState -Session $session
+            Write-Status "Temporary administrator account created" "PASS"
+        }
 
-		# Reset the adapter_binding to what it was before
-		if ($set_network_sharing)
-		{
-			Write-Host "Resetting the network adapter binding..."
-			if ($adapter_binding)
-			{
-				Enable-NetAdapterBinding -Name $($adapter_bindings.Name) -ComponentID ms_server
-			}
-			else 
-			{
-				Disable-NetAdapterBinding -Name $($adapter_bindings.Name) -ComponentID ms_server
-			}
-			Log-Message "Reverted network adapter binding to previous state."
-		}
+        if ($set_fw_rules) {
+            Write-Info "Disabling firewall and allowing all inbound connections for all profiles..."
+            Invoke-Netsh "advfirewall set domainprofile state off" | Out-Null
+            Invoke-Netsh "advfirewall set privateprofile state off" | Out-Null
+            Invoke-Netsh "advfirewall set publicprofile state off" | Out-Null
 
-		# Resetting the automatic creation of admin shares and restart the server service
-		if ($set_admin_shares)
-		{
-			Write-Host "Resetting the admin shares automatic creation ..."
-			if (($autoShareWksValue -eq 0) -or ($autoShareServerValue -eq 0))
-			{
-				if ($autoShareWksValue -eq 0) {Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "AutoShareWks" -Value 0 -Force}
-				if ($autoShareServerValue -eq 0) {Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "AutoShareServer" -Value 0 -Force}
-			}
-			# Restart the server service to make these registry changes effective
-			Restart-Service -Name LanmanServer -Force
-			Log-Message "Resetted admin shares and restarted Server Service"
-		}
+            Set-NetFirewallProfile -Name Domain -DefaultInboundAction Allow
+            Set-NetFirewallProfile -Name Private -DefaultInboundAction Allow
+            Set-NetFirewallProfile -Name Public -DefaultInboundAction Allow
 
-		# If the admin account has been enabled and password changed, reset the password to random value and disable the account
-		if ($continuerealadminchangepassenable)
-		{
-			Write-Host "Disabling the local Administrator account ..."
-			# Disabling the account and setting the password
-			Disable-LocalUser -Name $accountName
-			# Set the password for the user account
-			Set-LocalUser -Name $accountName -Password $(ConvertTo-SecureString -AsPlainText $(Generate-RandomPassword -length 20) -Force)
-			Write-Host "Setting a random password for the local Administrator account ..."
-			Log-Message "Disabled $accountName and set a random password."
-		}
-		if ($continuerealadminchangepass)
-		{
-			# Set the password for the user account
-			Set-LocalUser -Name $accountName -Password $(ConvertTo-SecureString -AsPlainText $(Generate-RandomPassword -length 20) -Force)
-			Write-Host "Setting a random password for the local Administrator account ..."
-			Log-Message "Resetted password for $accountName"
-		}
-		# Removing the added account should this been chosen
-		if ($added_account)
-		{
-			Remove-LocalUser -Name "Check"
-			Write-Host "Additional created administrator account 'Check' has been removed."
-		}
+            $session.FirewallChanged = $true
+            Save-SessionState -Session $session
+            Write-Status "Firewall changes applied" "PASS"
+        }
 
-		Write-Host "`nThe system has been restored to its previous state`n"
-		Log-Message "---- Finished restoring settings ----"
+        if ($set_remote_reg) {
+            Write-Info "Enabling and starting the RemoteRegistry service..."
+            Set-Service -Name RemoteRegistry -StartupType Automatic
+            Start-Service -Name RemoteRegistry
+            $session.RemoteRegistryChanged = $true
+            Save-SessionState -Session $session
+            Write-Status "RemoteRegistry changes applied" "PASS"
+        }
+
+        if ($set_uac) {
+            Write-Info "Setting LocalAccountTokenFilterPolicy to 1..."
+            Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'LocalAccountTokenFilterPolicy' -Value 1 -Force
+            $session.LatfpChanged = $true
+            Save-SessionState -Session $session
+            Write-Status "UAC policy changes applied" "PASS"
+        }
+
+        if ($set_network_sharing) {
+            Write-Info "Enabling the Windows network sharing binding on the interface..."
+            Enable-NetAdapterBinding -Name $adapter_bindings.Name -ComponentID ms_server | Out-Null
+            $session.NetworkBindingChanged = $true
+            Save-SessionState -Session $session
+            Write-Status "Network sharing changes applied" "PASS"
+        }
+
+        if ($set_admin_shares) {
+            Write-Info "Enabling automatic administrative shares..."
+            if ($autoShareWksState.Exists -and $autoShareWksState.Value -eq 0) {
+                Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name 'AutoShareWks' -Value 1 -Force
+            }
+            if ($autoShareServerState.Exists -and $autoShareServerState.Value -eq 0) {
+                Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name 'AutoShareServer' -Value 1 -Force
+            }
+            Restart-Service -Name LanmanServer -Force
+            $session.SharesChanged = $true
+            Save-SessionState -Session $session
+            Write-Status "Administrative shares changes applied" "PASS"
+        }
+
+        Write-Section "Scan phase"
+        Write-Host "Perform the authenticated scan now." -ForegroundColor Yellow
+        Log-Message "Apply phase complete. Waiting for operator confirmation to restore."
+
+        Read-Host -Prompt "When the scan is complete, press Enter to restore the original state" | Out-Null
+
+        Write-Section "Restore phase"
+        Write-Info "Starting restore..."
+        Log-Message "Calling Restore-PreviousState after scan prompt."
+        $restoreAttempted = $true
+        $restoreOk = Restore-PreviousState -KeepSessionOnFailure
+
+        if ($restoreOk) {
+            Log-Message "Restore call returned success."
+            Write-Host -ForegroundColor Green "Restore completed."
+        }
+        else {
+            Log-Message "Restore call returned failure."
+            Write-Warn "Restore completed with errors. Check the log."
+        }
+    }
+    catch {
+        Log-Message "Fatal error in apply/scan flow: $($_.Exception.Message)"
+        Write-Host -ForegroundColor Red "Fatal error: $($_.Exception.Message)"
+        if ($_.ScriptStackTrace) {
+            Write-Host -ForegroundColor DarkRed $_.ScriptStackTrace
+            Log-Message $_.ScriptStackTrace
+        }
+
+        if (-not $restoreAttempted -and (Test-Path $Script:SessionFile)) {
+            Write-Host ""
+            Write-Warn "Attempting restore after error..."
+            Log-Message "Calling Restore-PreviousState from catch block."
+            $null = Restore-PreviousState -KeepSessionOnFailure
+        }
+    }
+    finally {
+        Write-Host ""
+        Read-Host "Press Enter to close" | Out-Null
+    }
 }
-
-pause
+else {
+    Remove-SessionState
+    Write-Info "No changes were made."
+    Log-Message "User chose not to apply changes. Session file removed."
+}
